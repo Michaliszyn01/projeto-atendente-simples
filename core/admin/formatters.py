@@ -18,10 +18,29 @@ def formatar_agendamento(agendamento: dict) -> dict[str, str]:
     }
 
 
+def formatar_agendamento_tabela(agendamento: dict) -> dict[str, str]:
+    return {
+        "Data": formatar_data_br(str(agendamento.get("data", ""))),
+        "Horário": agendamento.get("horario", ""),
+        "Serviço": _capitalizar(str(agendamento.get("servico", ""))),
+        "Profissional": agendamento.get("profissional", ""),
+        "Cliente": agendamento.get("nome", ""),
+        "Telefone": agendamento.get("telefone", ""),
+        "Status": agendamento.get("status", ""),
+    }
+
+
 def formatar_cancelado(agendamento: dict) -> dict[str, str]:
     dados = formatar_agendamento(agendamento)
     dados.pop("status", None)
     dados["cancelado_em"] = agendamento.get("cancelado_em", "")
+    return dados
+
+
+def formatar_cancelado_tabela(agendamento: dict) -> dict[str, str]:
+    dados = formatar_agendamento_tabela(agendamento)
+    dados.pop("Status", None)
+    dados["Cancelado em"] = agendamento.get("cancelado_em", "")
     return dados
 
 
@@ -31,10 +50,22 @@ def formatar_lista_agendamentos(agendamentos: list[dict]) -> list[dict[str, str]
     return [formatar_agendamento(agendamento) for agendamento in agendamentos]
 
 
+def formatar_tabela_agendamentos(agendamentos: list[dict]) -> list[dict[str, str]] | str:
+    if not agendamentos:
+        return MENSAGEM_SEM_AGENDAMENTOS
+    return [formatar_agendamento_tabela(agendamento) for agendamento in agendamentos]
+
+
 def formatar_lista_cancelados(agendamentos: list[dict]) -> list[dict[str, str]] | str:
     if not agendamentos:
         return MENSAGEM_SEM_AGENDAMENTOS
     return [formatar_cancelado(agendamento) for agendamento in agendamentos]
+
+
+def formatar_tabela_cancelados(agendamentos: list[dict]) -> list[dict[str, str]] | str:
+    if not agendamentos:
+        return MENSAGEM_SEM_AGENDAMENTOS
+    return [formatar_cancelado_tabela(agendamento) for agendamento in agendamentos]
 
 
 def formatar_solicitacoes(solicitacoes: list[dict]) -> list[dict[str, str]] | str:
@@ -53,6 +84,22 @@ def formatar_solicitacoes(solicitacoes: list[dict]) -> list[dict[str, str]] | st
     ]
 
 
+def formatar_tabela_solicitacoes(solicitacoes: list[dict]) -> list[dict[str, str]] | str:
+    if not solicitacoes:
+        return MENSAGEM_SEM_SOLICITACOES
+    return [
+        {
+            "Nome": solicitacao.get("nome", ""),
+            "Telefone": solicitacao.get("telefone", ""),
+            "Categoria": solicitacao.get("categoria", ""),
+            "Descrição/Pedido": solicitacao.get("descricao") or solicitacao.get("pedido", ""),
+            "Criado em": solicitacao.get("criado_em", ""),
+            "Status": solicitacao.get("status", ""),
+        }
+        for solicitacao in solicitacoes
+    ]
+
+
 def formatar_horarios_disponiveis(horarios_por_profissional: dict[str, list[str]]) -> list[dict[str, str]] | str:
     linhas = [
         {"profissional": profissional, "horário": horario}
@@ -60,6 +107,36 @@ def formatar_horarios_disponiveis(horarios_por_profissional: dict[str, list[str]
         for horario in horarios
     ]
     return linhas or MENSAGEM_SEM_HORARIOS
+
+
+def formatar_tabela_horarios_disponiveis(horarios_por_profissional: dict[str, list[str]]) -> list[dict[str, str]] | str:
+    linhas = [
+        {"Profissional": profissional, "Horário": horario}
+        for profissional, horarios in horarios_por_profissional.items()
+        for horario in horarios
+    ]
+    return linhas or MENSAGEM_SEM_HORARIOS
+
+
+def formatar_contagem_tabela(
+    contagem: dict | None,
+    nome_coluna: str = "Item",
+    valor_coluna: str = "Quantidade",
+) -> list[dict]:
+    if not contagem:
+        return []
+
+    return [
+        {
+            nome_coluna: item,
+            valor_coluna: quantidade,
+        }
+        for item, quantidade in sorted(
+            contagem.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+    ]
 
 
 def formatar_resumo_do_dia(resumo: dict) -> str:
@@ -100,3 +177,6 @@ def _formatar_contagem(contagem: dict) -> list[str]:
         return ["- Nenhum registro"]
     return [f"- {nome}: {quantidade}" for nome, quantidade in contagem.items()]
 
+
+def _capitalizar(texto: str) -> str:
+    return " ".join(parte.capitalize() for parte in texto.split())

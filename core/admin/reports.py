@@ -91,8 +91,15 @@ def gerar_resumo_do_dia(
         "por_profissional": dict(por_profissional),
         "primeiro_horario": horarios[0] if horarios else None,
         "ultimo_horario": horarios[-1] if horarios else None,
+        "proximo_horario": horarios[0] if horarios else None,
         "profissional_mais_atendimentos": _item_mais_comum(por_profissional),
     }
+
+
+def contar_solicitacoes_loja(
+    solicitacoes_repository: JsonAgendaRepository | None = None,
+) -> int:
+    return len(listar_solicitacoes_loja(solicitacoes_repository))
 
 
 def listar_horarios_disponiveis(
@@ -162,4 +169,3 @@ def _item_mais_comum(contador: Counter) -> str | None:
     if not contador:
         return None
     return contador.most_common(1)[0][0]
-

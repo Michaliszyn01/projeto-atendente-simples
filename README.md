@@ -122,10 +122,38 @@ data/agenda.json
 data/solicitacoes.json
 ```
 
+Esses arquivos podem conter dados reais de clientes e não devem ser enviados ao GitHub. Eles estão no `.gitignore`.
+
 Para instalar a dependência visual do painel:
 
 ```bash
 pip install -r requirements.txt
+```
+
+Para preencher o painel com dados fictícios seguros para demonstração:
+
+```bash
+python scripts/gerar_dados_demo.py
+```
+
+O script cria agendamentos e solicitações fictícias em:
+
+```text
+data/agenda.json
+data/solicitacoes.json
+```
+
+Para limpar os dados locais e voltar os arquivos para listas vazias:
+
+```bash
+python scripts/limpar_dados.py
+```
+
+Fluxo sugerido para demonstração:
+
+```bash
+python scripts/gerar_dados_demo.py
+streamlit run app/admin_dashboard.py
 ```
 
 ## Como testar
@@ -346,6 +374,18 @@ data/solicitacoes.json
 ```
 
 Eles começam como listas vazias (`[]`) e estão no `.gitignore`, porque podem conter dados reais de clientes. Não envie esses arquivos para o GitHub com dados reais.
+
+Para uma demonstração sem dados reais, rode:
+
+```bash
+python scripts/gerar_dados_demo.py
+```
+
+Para zerar os dados locais:
+
+```bash
+python scripts/limpar_dados.py
+```
 
 Exemplos seguros ficam em:
 

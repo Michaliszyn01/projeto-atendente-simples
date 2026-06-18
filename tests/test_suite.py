@@ -1,5 +1,6 @@
 from datetime import date
 import inspect
+import json
 from pathlib import Path
 import re
 import shutil
@@ -19,6 +20,8 @@ from core.conversation.flow import AtendimentoFlow
 from core.scheduling.availability import calcular_horarios_disponiveis, tem_conflito
 from core.scheduling.validators import normalizar_data, normalizar_telefone, validar_telefone
 from core.storage.json_repository import DEFAULT_AGENDA_PATH, JsonAgendaRepository
+from scripts.gerar_dados_demo import CLIENTES_FICTICIOS, criar_agenda_demo, gerar_dados_demo
+from scripts.limpar_dados import limpar_dados
 
 
 HOJE = date(2026, 6, 17)
@@ -1139,3 +1142,231 @@ def test_admin_formatador_agenda_mostra_nome_servico_profissional_e_telefone():
     assert formatado["serviço"] == "corte"
     assert formatado["profissional"] == "Marcos"
     assert formatado["telefone"] == "14999999999"
+
+
+def test_admin_formatador_tabela_agenda_retorna_colunas_esperadas():
+    tabela = formatters.formatar_tabela_agendamentos([agendamento_base()])
+
+    assert set(tabela[0]) == {
+        "Data",
+        "Horário",
+        "Serviço",
+        "Profissional",
+        "Cliente",
+        "Telefone",
+        "Status",
+    }
+
+
+def test_admin_formatar_contagem_tabela_ordena_e_aceita_colunas_customizadas():
+    tabela = formatters.formatar_contagem_tabela(
+        {"barba": 1, "corte": 3, "corte + barba": 2},
+        nome_coluna="Serviço",
+        valor_coluna="Total",
+    )
+
+    assert tabela == [
+        {"Serviço": "corte", "Total": 3},
+        {"Serviço": "corte + barba", "Total": 2},
+        {"Serviço": "barba", "Total": 1},
+    ]
+    assert formatters.formatar_contagem_tabela({}) == []
+    assert formatters.formatar_contagem_tabela(None) == []
+
+
+def test_script_gerar_dados_demo_cria_agenda_nao_vazia(tmp_path):
+    agenda_path = tmp_path / "agenda.json"
+    solicitacoes_path = tmp_path / "solicitacoes.json"
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+
+    agenda, solicitacoes = gerar_dados_demo(
+        agenda_path=agenda_path,
+        solicitacoes_path=solicitacoes_path,
+        config=config,
+        hoje=date(2026, 6, 18),
+    )
+
+    assert agenda
+    assert solicitacoes
+    assert json.loads(agenda_path.read_text(encoding="utf-8")) == agenda
+    assert json.loads(solicitacoes_path.read_text(encoding="utf-8")) == solicitacoes
+
+
+def test_dados_demo_possuem_status_agendado_e_cancelado():
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+
+    agenda = criar_agenda_demo(config, hoje=date(2026, 6, 18))
+    status = {agendamento["status"] for agendamento in agenda}
+
+    assert "agendado" in status
+    assert "cancelado" in status
+
+
+def test_dados_demo_nao_usam_nomes_reais_sensiveis():
+    nomes_reais_do_projeto = {"Eduardo", "Marcos Eduardo"}
+
+    assert not nomes_reais_do_projeto.intersection(CLIENTES_FICTICIOS)
+
+
+def test_resumo_do_dia_funciona_com_dados_demo(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+    agenda = criar_agenda_demo(config, hoje=date(2026, 6, 18))
+    repository.salvar(agenda)
+
+    resumo = reports.gerar_resumo_do_dia("2026-06-18", repository)
+
+    assert resumo["total_agendamentos_ativos"] >= 1
+    assert resumo["servicos"]
+    assert resumo["por_profissional"]
+
+
+def test_limpar_dados_zera_agenda_e_solicitacoes(tmp_path):
+    agenda_path = tmp_path / "agenda.json"
+    solicitacoes_path = tmp_path / "solicitacoes.json"
+    agenda_path.write_text('[{"id": "1"}]', encoding="utf-8")
+    solicitacoes_path.write_text('[{"id": "2"}]', encoding="utf-8")
+
+    limpar_dados(agenda_path=agenda_path, solicitacoes_path=solicitacoes_path)
+
+    assert json.loads(agenda_path.read_text(encoding="utf-8")) == []
+    assert json.loads(solicitacoes_path.read_text(encoding="utf-8")) == []
+
+
+def test_relatorios_continuam_ignorando_cancelados_na_agenda_ativa(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="ativo", status="agendado"),
+            agendamento_base(id="cancelado", status="cancelado"),
+        ]
+    )
+
+    agendamentos = reports.listar_agendamentos_por_data("2026-06-18", repository)
+
+    assert [agendamento["id"] for agendamento in agendamentos] == ["ativo"]
+
+
+def test_painel_importa_sem_executar_erro_grave():
+    import app.admin_dashboard as admin_dashboard
+
+    assert callable(admin_dashboard.main)
+
+
+def test_painel_tem_fallback_para_formatar_contagem_tabela(monkeypatch):
+    import app.admin_dashboard as admin_dashboard
+
+    monkeypatch.delattr(formatters, "formatar_contagem_tabela")
+
+    tabela = admin_dashboard._formatar_contagem_tabela({"barba": 1, "corte": 2})
+
+    assert tabela == [
+        {"Item": "corte", "Quantidade": 2},
+        {"Item": "barba", "Quantidade": 1},
+    ]
+
+
+def test_painel_main_renderiza_com_streamlit_falso_sem_argumentos_incompativeis(tmp_path, monkeypatch):
+    import app.admin_dashboard as admin_dashboard
+
+    fake_st = FakeStreamlit()
+    agenda_repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    solicitacoes_repository = JsonAgendaRepository(tmp_path / "solicitacoes.json")
+    agenda_repository.salvar([agendamento_base()])
+    solicitacoes_repository.salvar([])
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+
+    def repository_factory(caminho=None):
+        if caminho == reports.DEFAULT_SOLICITACOES_PATH:
+            return solicitacoes_repository
+        return agenda_repository
+
+    monkeypatch.setattr(admin_dashboard, "st", fake_st)
+    monkeypatch.setattr(admin_dashboard, "carregar_config", lambda: config)
+    monkeypatch.setattr(admin_dashboard, "JsonAgendaRepository", repository_factory)
+
+    admin_dashboard.main()
+
+    assert fake_st.dataframes
+    assert all("hide_index" not in chamada for chamada in fake_st.dataframes)
+
+
+class FakeContext:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def metric(self, *args, **kwargs):
+        pass
+
+
+class FakeSidebar:
+    def header(self, *args, **kwargs):
+        pass
+
+    def selectbox(self, _label, options, **_kwargs):
+        return options[0] if options else None
+
+    def date_input(self, _label, value=None, **_kwargs):
+        return value
+
+    def checkbox(self, *args, **kwargs):
+        return False
+
+    def info(self, *args, **kwargs):
+        pass
+
+    def markdown(self, *args, **kwargs):
+        pass
+
+    def subheader(self, *args, **kwargs):
+        pass
+
+    def caption(self, *args, **kwargs):
+        pass
+
+
+class FakeStreamlit:
+    def __init__(self):
+        self.sidebar = FakeSidebar()
+        self.dataframes = []
+
+    def set_page_config(self, *args, **kwargs):
+        pass
+
+    def title(self, *args, **kwargs):
+        pass
+
+    def caption(self, *args, **kwargs):
+        pass
+
+    def tabs(self, nomes):
+        return [FakeContext() for _nome in nomes]
+
+    def columns(self, quantidade):
+        return [FakeContext() for _indice in range(quantidade)]
+
+    def subheader(self, *args, **kwargs):
+        pass
+
+    def text(self, *args, **kwargs):
+        pass
+
+    def markdown(self, *args, **kwargs):
+        pass
+
+    def write(self, *args, **kwargs):
+        pass
+
+    def code(self, *args, **kwargs):
+        pass
+
+    def info(self, *args, **kwargs):
+        pass
+
+    def dataframe(self, dados, **kwargs):
+        if "hide_index" in kwargs:
+            raise TypeError("hide_index não é aceito por este Streamlit falso")
+        self.dataframes.append(kwargs)
