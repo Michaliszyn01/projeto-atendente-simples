@@ -92,6 +92,42 @@ O atendimento acontece no terminal. Digite uma das opções do menu inicial e si
 
 O `main.py` só chama `app/terminal_app.py`, que orquestra `TerminalChannel` e `ConversationEngine`. As regras de agendamento, consulta, cancelamento e remarcação não ficam no terminal nem no canal.
 
+## Painel administrativo local
+
+O projeto também possui um painel visual simples em Streamlit para o dono do estabelecimento acompanhar os dados locais:
+
+```bash
+streamlit run app/admin_dashboard.py
+```
+
+O painel mostra:
+
+```text
+dados básicos do estabelecimento vindos de config/config.json
+agenda por data
+agenda de hoje e amanhã pela seleção de data
+filtro por profissional
+agendamentos cancelados
+solicitações da loja em data/solicitacoes.json
+horários disponíveis por data, período, profissional e serviço
+resumo do dia com totais, serviços, profissionais, primeiro e último horário
+```
+
+Ele é apenas local, não possui login real nesta etapa e continua usando JSON como armazenamento. Ainda não existe IA, OpenAI, WhatsApp real, banco externo, Flask, FastAPI ou Django.
+
+Os dados reais continuam em:
+
+```text
+data/agenda.json
+data/solicitacoes.json
+```
+
+Para instalar a dependência visual do painel:
+
+```bash
+pip install -r requirements.txt
+```
+
 ## Como testar
 
 ```bash

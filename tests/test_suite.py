@@ -11,6 +11,7 @@ from app.terminal_app import run_terminal_app
 from channels.base import IncomingMessage, OutgoingMessage
 from channels.fake_whatsapp import FakeWhatsAppChannel
 from channels.terminal import TerminalChannel
+from core.admin import formatters, reports
 from core.config.config_loader import ConfigError, PROJECT_ROOT, carregar_config
 import core.conversation.engine as engine_module
 from core.conversation.engine import ConversationEngine
@@ -968,3 +969,173 @@ def test_terminal_continua_usando_mesma_engine_via_canal():
     assert "TerminalChannel" in codigo
     assert "engine.process_message" in codigo
     assert "OutgoingMessage" in codigo
+
+
+def test_admin_listar_agenda_por_data_retorna_apenas_agendados(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="ativo"),
+            agendamento_base(id="cancelado", status="cancelado", cancelado_em="2026-06-18T10:00:00"),
+            agendamento_base(id="outra-data", data="2026-06-19"),
+        ]
+    )
+
+    agendamentos = reports.listar_agendamentos_por_data("2026-06-18", repository)
+
+    assert [agendamento["id"] for agendamento in agendamentos] == ["ativo"]
+
+
+def test_admin_agenda_hoje_ignora_cancelados(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="ativo", data="2026-06-18"),
+            agendamento_base(id="cancelado", data="2026-06-18", status="cancelado"),
+        ]
+    )
+
+    agendamentos = reports.listar_agendamentos_hoje(repository, hoje=date(2026, 6, 18))
+
+    assert len(agendamentos) == 1
+    assert agendamentos[0]["id"] == "ativo"
+
+
+def test_admin_agenda_amanha_funciona(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="hoje", data="2026-06-18"),
+            agendamento_base(id="amanha", data="2026-06-19"),
+        ]
+    )
+
+    agendamentos = reports.listar_agendamentos_amanha(repository, hoje=date(2026, 6, 18))
+
+    assert [agendamento["id"] for agendamento in agendamentos] == ["amanha"]
+
+
+def test_admin_listar_por_profissional_funciona(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="marcos", profissional="Marcos"),
+            agendamento_base(id="julio", profissional="Julio"),
+            agendamento_base(id="marcos-cancelado", profissional="Marcos", status="cancelado"),
+        ]
+    )
+
+    agendamentos = reports.listar_agendamentos_por_profissional("Marcos", repository)
+
+    assert [agendamento["id"] for agendamento in agendamentos] == ["marcos"]
+
+
+def test_admin_cancelados_aparecem_no_relatorio_de_cancelados(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="ativo"),
+            agendamento_base(id="cancelado", status="cancelado", cancelado_em="2026-06-18T10:00:00"),
+        ]
+    )
+
+    cancelados = reports.listar_agendamentos_cancelados(repository)
+
+    assert [agendamento["id"] for agendamento in cancelados] == ["cancelado"]
+
+
+def test_admin_solicitacoes_loja_sao_listadas(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "solicitacoes.json")
+    repository.salvar(
+        [
+            {
+                "nome": "Eduardo",
+                "telefone": "14999999999",
+                "categoria": "orcamento",
+                "descricao": "Quero um orçamento",
+                "criado_em": "2026-06-18T10:00:00",
+                "status": "novo",
+            }
+        ]
+    )
+
+    solicitacoes = reports.listar_solicitacoes_loja(repository)
+
+    assert solicitacoes[0]["nome"] == "Eduardo"
+    assert solicitacoes[0]["descricao"] == "Quero um orçamento"
+
+
+def test_admin_resumo_do_dia_conta_servicos_corretamente(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="corte-1", servico="corte", horario="09:00"),
+            agendamento_base(id="corte-2", servico="corte", horario="10:00"),
+            agendamento_base(id="barba", servico="barba", horario="11:00"),
+            agendamento_base(id="cancelado", servico="barba", status="cancelado"),
+        ]
+    )
+
+    resumo = reports.gerar_resumo_do_dia("2026-06-18", repository)
+
+    assert resumo["servicos"] == {"corte": 2, "barba": 1}
+    assert resumo["total_agendamentos_ativos"] == 3
+    assert resumo["total_cancelados"] == 1
+
+
+def test_admin_resumo_do_dia_conta_profissionais_corretamente(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="marcos-1", profissional="Marcos", horario="09:00"),
+            agendamento_base(id="marcos-2", profissional="Marcos", horario="10:00"),
+            agendamento_base(id="julio", profissional="Julio", horario="11:00"),
+        ]
+    )
+
+    resumo = reports.gerar_resumo_do_dia("2026-06-18", repository)
+
+    assert resumo["por_profissional"] == {"Marcos": 2, "Julio": 1}
+    assert resumo["profissional_mais_atendimentos"] == "Marcos"
+    assert resumo["primeiro_horario"] == "09:00"
+    assert resumo["ultimo_horario"] == "11:00"
+
+
+def test_admin_horarios_disponiveis_por_data_periodo_funcionam(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar([agendamento_base(data="2026-06-18", horario="14:00", profissional="Marcos")])
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+
+    horarios = reports.listar_horarios_disponiveis(
+        data="2026-06-18",
+        periodo="tarde",
+        profissional="Marcos",
+        agenda_repository=repository,
+        config=config,
+        servico="corte",
+    )
+
+    assert "14:00" not in horarios["Marcos"]
+    assert "14:30" in horarios["Marcos"]
+
+
+def test_admin_formatador_lista_vazia_retorna_mensagem_clara():
+    assert formatters.formatar_lista_agendamentos([]) == "Nenhum agendamento encontrado."
+    assert formatters.formatar_solicitacoes([]) == "Nenhuma solicitação encontrada."
+    assert formatters.formatar_horarios_disponiveis({}) == "Nenhum horário disponível."
+
+
+def test_admin_formatador_agenda_mostra_nome_servico_profissional_e_telefone():
+    agendamento = agendamento_base(
+        nome="Eduardo",
+        servico="corte",
+        profissional="Marcos",
+        telefone="14999999999",
+    )
+
+    formatado = formatters.formatar_agendamento(agendamento)
+
+    assert formatado["cliente"] == "Eduardo"
+    assert formatado["serviço"] == "corte"
+    assert formatado["profissional"] == "Marcos"
+    assert formatado["telefone"] == "14999999999"
