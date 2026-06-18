@@ -22,3 +22,25 @@ def atualizar_status_agendamento(
     if extras:
         dados.update(extras)
     return repository.atualizar_agendamento(agendamento_id, dados)
+
+
+def cancelar_agendamento(
+    repository: JsonAgendaRepository,
+    agendamento_id: str,
+) -> dict | None:
+    return repository.cancelar_agendamento(agendamento_id)
+
+
+def remarcar_agendamento(
+    repository: JsonAgendaRepository,
+    agendamento_id: str,
+    nova_data: str,
+    novo_horario: str,
+    profissional: str,
+) -> dict | None:
+    return repository.remarcar_agendamento(
+        agendamento_id,
+        nova_data,
+        novo_horario,
+        profissional,
+    )

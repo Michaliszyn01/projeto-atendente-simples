@@ -10,7 +10,7 @@
   "usa_profissional": true,
   "nome_profissional": "profissional",
   "nome_servico": "serviço",
-  "opcoes_inicio": ["agendar", "consultar", "cancelar", "falar com alguém"],
+  "opcoes_inicio": ["agendar", "consultar", "cancelar", "remarcar", "falar com alguém"],
   "servicos": {
     "corte": 30,
     "barba": 30,
@@ -22,8 +22,8 @@
     "tarde": ["14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30"]
   },
   "mensagens": {
-    "inicio": "Olá! Eu sou o assistente virtual da {nome_estabelecimento}. O que você deseja fazer?\nResponda com:\n\n* agendar\n* consultar\n* cancelar\n* alguém",
-    "menu_inicial": "Olá! Eu sou o assistente virtual da {nome_estabelecimento}. O que você deseja fazer?\nResponda com:\n\n* agendar\n* consultar\n* cancelar\n* alguém",
+    "inicio": "Olá! Eu sou o assistente virtual da {nome_estabelecimento}. O que você deseja fazer?\nResponda com:\n\n* agendar\n* consultar\n* cancelar\n* remarcar\n* alguém",
+    "menu_inicial": "Olá! Eu sou o assistente virtual da {nome_estabelecimento}. O que você deseja fazer?\nResponda com:\n\n* agendar\n* consultar\n* cancelar\n* remarcar\n* alguém",
     "pergunta_dia": "Qual dia você quer agendar? Responda com hoje, amanhã ou uma data no formato DD/MM/AAAA.",
     "pergunta_servico": "Qual serviço você quer?",
     "pergunta_profissional": "Tem preferência por algum profissional?",
@@ -35,6 +35,14 @@
     "confirmacao_cancelamento": "Tem certeza que deseja cancelar este agendamento? Responda sim ou não.",
     "cancelamento_confirmado": "Agendamento cancelado com sucesso.",
     "agendamento_nao_encontrado": "Não encontrei agendamentos ativos para esse telefone.",
+    "remarcacao_pede_telefone": "Digite o telefone usado no agendamento.",
+    "remarcacao_nao_encontrado": "Não encontrei agendamentos ativos para esse telefone.",
+    "remarcacao_escolha_agendamento": "Digite o número do agendamento que deseja remarcar ou digite voltar.",
+    "remarcacao_pergunta_dia": "Para qual dia deseja remarcar?",
+    "confirmacao_remarcacao": "Digite sim para confirmar ou não para cancelar.",
+    "remarcacao_concluida": "Agendamento remarcado com sucesso.",
+    "remarcacao_cancelada": "Remarcação cancelada. O agendamento continua sem alterações.",
+    "remarcacao_sem_horarios": "Não encontrei horários disponíveis para remarcar nessa combinação.",
     "humano": "Certo, vou chamar alguém para te atender."
   }
 }

@@ -11,6 +11,7 @@ def calcular_horarios_disponiveis(
     periodo: str,
     agenda: list[dict],
     config: dict[str, Any] | None = None,
+    ignorar_agendamento_id: str | None = None,
 ) -> list[dict[str, str]]:
     config = config or carregar_config()
     duracao = int(config["servicos"][servico])
@@ -28,7 +29,14 @@ def calcular_horarios_disponiveis(
             continue
 
         for profissional in profissionais:
-            if not tem_conflito(data, horario, profissional, duracao, agenda):
+            if not tem_conflito(
+                data,
+                horario,
+                profissional,
+                duracao,
+                agenda,
+                ignorar_agendamento_id=ignorar_agendamento_id,
+            ):
                 opcoes.append({"horario": horario, "profissional": profissional})
 
     return opcoes
@@ -63,11 +71,14 @@ def tem_conflito(
     profissional: str,
     duracao_minutos: int,
     agenda: list[dict],
+    ignorar_agendamento_id: str | None = None,
 ) -> bool:
     inicio_novo = horario_para_minutos(horario)
     fim_novo = inicio_novo + duracao_minutos
 
     for agendamento in agenda:
+        if ignorar_agendamento_id is not None and agendamento.get("id") == ignorar_agendamento_id:
+            continue
         if agendamento.get("status") != "agendado":
             continue
         if agendamento.get("data") != data:

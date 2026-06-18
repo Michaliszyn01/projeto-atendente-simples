@@ -84,3 +84,32 @@ def test_cancelamento_altera_status_e_adiciona_cancelado_em(tmp_path):
     assert "cancelado" in resposta.lower()
     assert agendamento["status"] == "cancelado"
     assert "cancelado_em" in agendamento
+    assert agendamento["historico"][-1]["acao"] == "cancelado"
+
+
+def test_consulta_informa_quando_agendamento_ja_foi_remarcado(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar_agendamentos(
+        [
+            {
+                "id": "1",
+                "nome": "Marcos Eduardo",
+                "telefone": "14999999999",
+                "servico": "corte",
+                "data": "2026-06-19",
+                "horario": "14:30",
+                "profissional": "Marcos",
+                "duracao_minutos": 30,
+                "status": "agendado",
+                "remarcado_em": "2026-06-18T16:10:00",
+            }
+        ]
+    )
+    flow = AtendimentoFlow(repository, hoje=date(2026, 6, 18))
+
+    flow.iniciar()
+    flow.receber("meu horário")
+    resposta = flow.receber("14999999999")
+
+    assert "Corte com Marcos em 19/06/2026 às 14:30" in resposta
+    assert "já foi remarcado" in resposta

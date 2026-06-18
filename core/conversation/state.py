@@ -18,3 +18,6 @@ class ConversationState:
     opcoes_horarios: list[dict[str, str]] = field(default_factory=list)
     agendamentos_encontrados: list[dict] = field(default_factory=list)
     agendamento_selecionado: Optional[dict] = None
+    nova_data: Optional[str] = None
+    novo_periodo: Optional[str] = None
+    novo_horario: Optional[str] = None

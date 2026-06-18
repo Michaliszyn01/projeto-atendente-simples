@@ -96,3 +96,66 @@ def test_horario_cancelado_volta_a_ficar_disponivel():
     )
 
     assert {"horario": "15:00", "profissional": "Marcos"} in opcoes
+
+
+def test_disponibilidade_ignora_o_proprio_agendamento_quando_informado():
+    agenda = [
+        {
+            "id": "1",
+            "nome": "Cliente",
+            "servico": "corte",
+            "data": "2026-06-16",
+            "horario": "15:00",
+            "profissional": "Marcos",
+            "duracao_minutos": 30,
+            "status": "agendado",
+        }
+    ]
+
+    opcoes = calcular_horarios_disponiveis(
+        data="2026-06-16",
+        servico="corte",
+        profissional_preferido="Marcos",
+        periodo="tarde",
+        agenda=agenda,
+        ignorar_agendamento_id="1",
+    )
+
+    assert {"horario": "15:00", "profissional": "Marcos"} in opcoes
+
+
+def test_disponibilidade_nao_ignora_outros_agendamentos():
+    agenda = [
+        {
+            "id": "1",
+            "nome": "Cliente",
+            "servico": "corte",
+            "data": "2026-06-16",
+            "horario": "15:00",
+            "profissional": "Marcos",
+            "duracao_minutos": 30,
+            "status": "agendado",
+        },
+        {
+            "id": "2",
+            "nome": "Outro Cliente",
+            "servico": "corte",
+            "data": "2026-06-16",
+            "horario": "15:30",
+            "profissional": "Marcos",
+            "duracao_minutos": 30,
+            "status": "agendado",
+        },
+    ]
+
+    opcoes = calcular_horarios_disponiveis(
+        data="2026-06-16",
+        servico="corte",
+        profissional_preferido="Marcos",
+        periodo="tarde",
+        agenda=agenda,
+        ignorar_agendamento_id="1",
+    )
+
+    assert {"horario": "15:00", "profissional": "Marcos"} in opcoes
+    assert {"horario": "15:30", "profissional": "Marcos"} not in opcoes

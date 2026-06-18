@@ -8,14 +8,15 @@
   "estado": "SP",
   "usa_agendamento": false,
   "usa_profissional": false,
-  "opcoes_inicio": ["ver produtos", "fazer orçamento", "falar com alguém"],
+  "opcoes_inicio": ["ver produtos", "fazer orçamento", "remarcar", "falar com alguém"],
   "categorias": ["informática", "celulares", "acessórios"],
   "mensagens": {
-    "inicio": "Olá! Eu sou o assistente virtual da {nome_estabelecimento}. Você quer ver produtos, fazer orçamento ou falar com alguém?",
-    "menu_inicial": "Olá! Eu sou o assistente virtual da {nome_estabelecimento}. Você quer ver produtos, fazer orçamento ou falar com alguém?",
+    "inicio": "Olá! Eu sou o assistente virtual da {nome_estabelecimento}. Você quer ver produtos, fazer orçamento, remarcar ou falar com alguém?",
+    "menu_inicial": "Olá! Eu sou o assistente virtual da {nome_estabelecimento}. Você quer ver produtos, fazer orçamento, remarcar ou falar com alguém?",
     "pergunta_categoria": "Qual categoria de produto você procura?",
     "pergunta_orcamento": "Me diga o que você precisa para eu registrar seu pedido.",
     "pergunta_nome": "Me fala seu nome.",
+    "remarcacao_indisponivel_loja": "Remarcação de horário não está disponível para loja. Posso chamar alguém para te atender.",
     "humano": "Certo, vou chamar um vendedor."
   }
 }

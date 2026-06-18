@@ -32,6 +32,17 @@ def test_loja_sem_agendamento_nao_pede_data_nem_horario(tmp_path):
     assert "horário" not in resposta
 
 
+def test_loja_nao_tenta_remarcar_horario(tmp_path):
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "loja.json")
+    flow = AtendimentoFlow(JsonAgendaRepository(tmp_path / "agenda.json"), config=config)
+
+    flow.iniciar()
+    resposta = flow.receber("remarcar")
+
+    assert "não está disponível para loja" in resposta
+    assert flow.state.etapa == "escolha_inicial"
+
+
 def test_loja_salva_solicitacao_de_orcamento(tmp_path):
     config = carregar_config(PROJECT_ROOT / "exemplos" / "loja.json")
     solicitacoes = JsonAgendaRepository(tmp_path / "solicitacoes.json")

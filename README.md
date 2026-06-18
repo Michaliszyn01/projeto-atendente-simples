@@ -1,6 +1,6 @@
 # Projeto Atendente Simples
 
-MVP 0.3 em Python puro para atendimento pelo terminal, sem IA, sem WhatsApp, sem web e sem banco externo.
+MVP 0.4 em Python puro para atendimento pelo terminal, sem IA, sem WhatsApp, sem web e sem banco externo.
 
 O comportamento vem de `config/config.json`, permitindo usar o mesmo motor em modos como `barbearia`, `clinica` e `loja`.
 
@@ -66,12 +66,22 @@ No modo com agendamento, o menu inicial aceita variações simples como:
 ```text
 agendar
 marcar
+marcar horário
 consultar
 ver agendamento
+meu horário
+qual meu horário
 cancelar
 desmarcar
+cancelar horário
+remarcar
+trocar horário
+mudar horário
+mudar agendamento
 alguém
 falar com alguém
+atendente
+humano
 ```
 
 Fluxo básico:
@@ -83,6 +93,7 @@ Responda com:
 * agendar
 * consultar
 * cancelar
+* remarcar
 * alguém
 > agendar
 Qual dia você quer agendar? Responda com hoje, amanhã ou uma data no formato DD/MM/AAAA.
@@ -136,6 +147,12 @@ Encontrei estes agendamentos:
 
 Somente agendamentos com `status: "agendado"` aparecem na consulta.
 
+Se o agendamento já tiver sido remarcado, a consulta mostra a data e horário atuais e informa:
+
+```text
+Este agendamento já foi remarcado anteriormente.
+```
+
 ## Cancelamento
 
 Para cancelar:
@@ -155,7 +172,53 @@ Tem certeza que deseja cancelar este agendamento? Responda sim ou não.
 Agendamento cancelado com sucesso.
 ```
 
-O registro não é apagado do JSON. O sistema altera o `status` para `cancelado` e adiciona `cancelado_em`. Horários cancelados deixam de bloquear a agenda.
+O registro não é apagado do JSON. O sistema altera o `status` para `cancelado`, adiciona `cancelado_em` e registra um evento no `historico`. Horários cancelados deixam de bloquear a agenda.
+
+## Remarcação
+
+Para remarcar:
+
+```text
+> remarcar
+Digite o telefone usado no agendamento.
+> 14999999999
+Encontrei estes agendamentos ativos:
+
+1. Corte com Marcos em 18/06/2026 às 15:00
+
+Digite o número do agendamento que deseja remarcar ou digite voltar.
+> 1
+Para qual dia deseja remarcar?
+> 19/06/2026
+Você prefere manhã ou tarde?
+> tarde
+Horários disponíveis:
+- 14:00
+- 14:30
+- 15:00
+- 15:30
+- 16:00
+- 16:30
+- 17:00
+- 17:30
+
+Qual novo horário você quer?
+> 14:30
+Confirmando remarcação:
+Agendamento atual:
+Corte com Marcos em 18/06/2026 às 15:00
+
+Novo agendamento:
+Corte com Marcos em 19/06/2026 às 14:30
+
+Digite sim para confirmar ou não para cancelar.
+> sim
+Agendamento remarcado com sucesso.
+```
+
+A remarcação atualiza o mesmo registro no `agenda.json`, mantendo o mesmo `id`. O sistema adiciona `remarcado_em` e um evento no `historico` com data, horário e profissional anteriores e novos.
+
+Ao buscar horários para remarcação, o próprio agendamento é ignorado para não bloquear seu horário atual. Outros agendamentos ativos continuam bloqueando conflitos normalmente.
 
 ## Arquivos de dados
 
@@ -175,4 +238,15 @@ data/exemplo_agenda.json
 data/exemplo_solicitacoes.json
 ```
 
-Durante um fluxo em andamento, digite `cancelar` para encerrar o atendimento. No menu inicial, `cancelar` inicia o fluxo de cancelamento de agendamento.
+## Comandos do terminal
+
+Durante um fluxo em andamento:
+
+```text
+cancelar
+voltar
+menu
+sair
+```
+
+`cancelar` encerra o fluxo atual. `voltar` retorna uma etapa quando fizer sentido. `menu` volta ao menu inicial. `sair` encerra o atendimento. No menu inicial, `cancelar` inicia o fluxo de cancelamento de agendamento.
