@@ -1,3 +1,5 @@
+from channels.base import OutgoingMessage
+from channels.terminal import TerminalChannel
 from core.config.config_loader import ConfigError
 from core.conversation.engine import ConversationEngine
 
@@ -9,12 +11,25 @@ def run_terminal_app(session_id: str = "terminal") -> None:
         print(f"Erro de configuração: {exc}")
         return
 
-    print(engine.start(session_id))
+    channel = TerminalChannel(sender_id=session_id)
+    channel.send(
+        OutgoingMessage(
+            channel=channel.channel_name,
+            recipient_id=session_id,
+            text=engine.start(session_id),
+        )
+    )
 
     while not engine.is_finished(session_id):
-        mensagem = input("> ")
-        resposta = engine.process_message(session_id, mensagem)
-        print(resposta)
+        incoming = channel.receive()
+        resposta = engine.process_message(incoming.sender_id, incoming.text)
+        channel.send(
+            OutgoingMessage(
+                channel=incoming.channel,
+                recipient_id=incoming.sender_id,
+                text=resposta,
+            )
+        )
 
-        if mensagem.strip().lower() == "sair":
+        if incoming.text.strip().lower() == "sair":
             break

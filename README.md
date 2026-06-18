@@ -6,7 +6,19 @@ O comportamento vem de `config/config.json`, permitindo usar o mesmo motor em mo
 
 ## Arquitetura
 
-O terminal é apenas uma interface. Ele lê `input()`, imprime `print()` e envia as mensagens para a `ConversationEngine`.
+A conversa agora passa por canais. Um canal recebe a mensagem, envia para a `ConversationEngine`, recebe a resposta e devolve ao usuário.
+
+```text
+Canal -> ConversationEngine -> Canal
+```
+
+O canal real atual é:
+
+```text
+channels/terminal.py
+```
+
+Ele concentra `input()` e `print()` do terminal, sem regra de negócio.
 
 O motor reutilizável fica em:
 
@@ -23,13 +35,13 @@ chama o fluxo de atendimento
 retorna a resposta em texto
 ```
 
-Assim, uma integração futura pode reutilizar o mesmo motor:
+Existe também um canal falso para simulação:
 
 ```text
-WhatsApp/site/outra interface -> ConversationEngine -> resposta
+channels/fake_whatsapp.py
 ```
 
-Sem implementar WhatsApp agora.
+Ele não usa API real, não conecta na Meta e não envia mensagens externas. Serve apenas para testes e demonstração de como um WhatsApp futuro poderia reaproveitar a engine.
 
 Exemplo de uso direto:
 
@@ -44,6 +56,32 @@ resposta = engine.process_message("cliente_1", "agendar")
 print(resposta)
 ```
 
+Exemplo com fake WhatsApp:
+
+```python
+from channels.base import OutgoingMessage
+from channels.fake_whatsapp import FakeWhatsAppChannel
+from core.conversation.engine import ConversationEngine
+from core.storage.json_repository import JsonAgendaRepository
+
+channel = FakeWhatsAppChannel()
+engine = ConversationEngine(agenda_repository=JsonAgendaRepository())
+
+incoming = channel.build_incoming("14999999999", "agendar")
+engine.start(incoming.sender_id)
+response = engine.process_message(incoming.sender_id, incoming.text)
+
+channel.send(
+    OutgoingMessage(
+        channel=incoming.channel,
+        recipient_id=incoming.sender_id,
+        text=response,
+    )
+)
+```
+
+WhatsApp real ainda não foi implementado.
+
 ## Como rodar
 
 ```bash
@@ -52,7 +90,7 @@ python main.py
 
 O atendimento acontece no terminal. Digite uma das opções do menu inicial e siga as perguntas.
 
-O `main.py` só chama `app/terminal_app.py`, que por sua vez usa a `ConversationEngine`. As regras de agendamento, consulta, cancelamento e remarcação não ficam no terminal.
+O `main.py` só chama `app/terminal_app.py`, que orquestra `TerminalChannel` e `ConversationEngine`. As regras de agendamento, consulta, cancelamento e remarcação não ficam no terminal nem no canal.
 
 ## Como testar
 

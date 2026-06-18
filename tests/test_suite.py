@@ -8,6 +8,9 @@ from uuid import uuid4
 import pytest
 
 from app.terminal_app import run_terminal_app
+from channels.base import IncomingMessage, OutgoingMessage
+from channels.fake_whatsapp import FakeWhatsAppChannel
+from channels.terminal import TerminalChannel
 from core.config.config_loader import ConfigError, PROJECT_ROOT, carregar_config
 import core.conversation.engine as engine_module
 from core.conversation.engine import ConversationEngine
@@ -851,8 +854,7 @@ def test_terminal_app_eh_fino_sem_regra_de_negocio_pesada():
     codigo = inspect.getsource(run_terminal_app)
 
     assert "ConversationEngine" in codigo
-    assert "input(" in codigo
-    assert "print(" in codigo
+    assert "TerminalChannel" in codigo
     assert "AtendimentoFlow" not in codigo
     assert "criar_agendamento" not in codigo
     assert "cancelar_agendamento" not in codigo
@@ -864,3 +866,105 @@ def test_conversation_engine_nao_usa_input_ou_print():
 
     assert "input(" not in codigo
     assert "print(" not in codigo
+
+
+def test_incoming_message_guarda_canal_remetente_e_texto():
+    mensagem = IncomingMessage(channel="terminal", sender_id="cliente_1", text="agendar")
+
+    assert mensagem.channel == "terminal"
+    assert mensagem.sender_id == "cliente_1"
+    assert mensagem.text == "agendar"
+    assert mensagem.raw is None
+
+
+def test_outgoing_message_guarda_canal_destinatario_e_texto():
+    mensagem = OutgoingMessage(channel="terminal", recipient_id="cliente_1", text="Olá")
+
+    assert mensagem.channel == "terminal"
+    assert mensagem.recipient_id == "cliente_1"
+    assert mensagem.text == "Olá"
+    assert mensagem.raw is None
+
+
+def test_terminal_channel_existe_e_nao_contem_regra_de_agendamento():
+    codigo = inspect.getsource(TerminalChannel)
+    channel = TerminalChannel()
+
+    assert channel.channel_name == "terminal"
+    assert "input(" in codigo
+    assert "print(" in codigo
+    assert "AtendimentoFlow" not in codigo
+    assert "ConversationEngine" not in codigo
+    assert "criar_agendamento" not in codigo
+    assert "cancelar_agendamento" not in codigo
+    assert "remarcar_agendamento" not in codigo
+
+
+def test_fake_whatsapp_channel_cria_mensagem_de_entrada():
+    channel = FakeWhatsAppChannel()
+
+    incoming = channel.build_incoming("14999999999", "agendar")
+
+    assert incoming.channel == "fake_whatsapp"
+    assert incoming.sender_id == "14999999999"
+    assert incoming.text == "agendar"
+    assert incoming.raw == {"phone": "14999999999", "text": "agendar"}
+
+
+def test_fake_whatsapp_channel_armazena_mensagem_enviada():
+    channel = FakeWhatsAppChannel()
+    outgoing = OutgoingMessage(
+        channel="fake_whatsapp",
+        recipient_id="14999999999",
+        text="Olá",
+    )
+
+    channel.send(outgoing)
+
+    assert channel.sent_messages == [outgoing]
+
+
+def test_engine_funciona_com_sender_id_do_fake_whatsapp(tmp_path):
+    channel = FakeWhatsAppChannel()
+    engine = ConversationEngine(agenda_repository=JsonAgendaRepository(tmp_path / "agenda.json"))
+
+    incoming = channel.build_incoming("14999999999", "agendar")
+    engine.start(incoming.sender_id)
+    response_text = engine.process_message(incoming.sender_id, incoming.text)
+    channel.send(
+        OutgoingMessage(
+            channel=incoming.channel,
+            recipient_id=incoming.sender_id,
+            text=response_text,
+        )
+    )
+
+    assert "Qual dia" in channel.sent_messages[0].text
+
+
+def test_fake_whatsapp_duas_sessoes_nao_misturam_estado(tmp_path):
+    channel = FakeWhatsAppChannel()
+    engine = ConversationEngine(
+        agenda_repository=JsonAgendaRepository(tmp_path / "agenda.json"),
+        hoje=date(2026, 6, 18),
+    )
+
+    mensagem_1 = channel.build_incoming("14999999999", "agendar")
+    mensagem_2 = channel.build_incoming("14888888888", "consultar")
+    engine.start(mensagem_1.sender_id)
+    engine.start(mensagem_2.sender_id)
+    resposta_1 = engine.process_message(mensagem_1.sender_id, mensagem_1.text)
+    resposta_2 = engine.process_message(mensagem_2.sender_id, mensagem_2.text)
+
+    assert "Qual dia" in resposta_1
+    assert "telefone" in resposta_2
+    assert engine.session_store.get_or_create("14999999999").etapa == "dia"
+    assert engine.session_store.get_or_create("14888888888").etapa == "consulta_telefone"
+
+
+def test_terminal_continua_usando_mesma_engine_via_canal():
+    codigo = inspect.getsource(run_terminal_app)
+
+    assert "TerminalChannel" in codigo
+    assert "engine.process_message" in codigo
+    assert "OutgoingMessage" in codigo
