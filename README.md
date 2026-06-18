@@ -1,8 +1,48 @@
 # Projeto Atendente Simples
 
-MVP 0.4 em Python puro para atendimento pelo terminal, sem IA, sem WhatsApp, sem web e sem banco externo.
+MVP em Python puro para atendimento pelo terminal, sem IA, sem WhatsApp, sem web e sem banco externo.
 
 O comportamento vem de `config/config.json`, permitindo usar o mesmo motor em modos como `barbearia`, `clinica` e `loja`.
+
+## Arquitetura
+
+O terminal é apenas uma interface. Ele lê `input()`, imprime `print()` e envia as mensagens para a `ConversationEngine`.
+
+O motor reutilizável fica em:
+
+```text
+core/conversation/engine.py
+```
+
+Ele:
+
+```text
+recebe session_id + mensagem
+mantém o estado da conversa por sessão
+chama o fluxo de atendimento
+retorna a resposta em texto
+```
+
+Assim, uma integração futura pode reutilizar o mesmo motor:
+
+```text
+WhatsApp/site/outra interface -> ConversationEngine -> resposta
+```
+
+Sem implementar WhatsApp agora.
+
+Exemplo de uso direto:
+
+```python
+from core.conversation.engine import ConversationEngine
+from core.storage.json_repository import JsonAgendaRepository
+
+engine = ConversationEngine(agenda_repository=JsonAgendaRepository())
+
+print(engine.start("cliente_1"))
+resposta = engine.process_message("cliente_1", "agendar")
+print(resposta)
+```
 
 ## Como rodar
 
@@ -11,6 +51,8 @@ python main.py
 ```
 
 O atendimento acontece no terminal. Digite uma das opções do menu inicial e siga as perguntas.
+
+O `main.py` só chama `app/terminal_app.py`, que por sua vez usa a `ConversationEngine`. As regras de agendamento, consulta, cancelamento e remarcação não ficam no terminal.
 
 ## Como testar
 

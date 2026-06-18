@@ -1,4 +1,5 @@
 from datetime import date
+import inspect
 from pathlib import Path
 import re
 import shutil
@@ -6,7 +7,10 @@ from uuid import uuid4
 
 import pytest
 
+from app.terminal_app import run_terminal_app
 from core.config.config_loader import ConfigError, PROJECT_ROOT, carregar_config
+import core.conversation.engine as engine_module
+from core.conversation.engine import ConversationEngine
 from core.conversation.flow import AtendimentoFlow
 from core.scheduling.availability import calcular_horarios_disponiveis, tem_conflito
 from core.scheduling.validators import normalizar_data, normalizar_telefone, validar_telefone
@@ -725,3 +729,138 @@ def test_telefone_normalizado_remove_mascara():
 def test_telefone_invalido_deve_ser_rejeitado():
     assert validar_telefone("123") is None
     assert validar_telefone("(14) 9999-9999") == "1499999999"
+
+
+def test_engine_inicia_conversa_e_retorna_menu_inicial(tmp_path):
+    engine = ConversationEngine(agenda_repository=JsonAgendaRepository(tmp_path / "agenda.json"))
+
+    resposta = engine.start("cliente_1")
+
+    assert "agendar" in resposta
+    assert engine.is_finished("cliente_1") is False
+
+
+def test_engine_mantem_estado_por_session_id(tmp_path):
+    engine = ConversationEngine(agenda_repository=JsonAgendaRepository(tmp_path / "agenda.json"))
+
+    engine.start("cliente_1")
+    engine.start("cliente_2")
+    resposta_1 = engine.process_message("cliente_1", "agendar")
+    resposta_2 = engine.process_message("cliente_2", "consultar")
+
+    assert "Qual dia" in resposta_1
+    assert "telefone" in resposta_2
+    assert engine.session_store.get_or_create("cliente_1").etapa == "dia"
+    assert engine.session_store.get_or_create("cliente_2").etapa == "consulta_telefone"
+
+
+def test_engine_duas_sessoes_nao_misturam_dados(tmp_path):
+    engine = ConversationEngine(agenda_repository=JsonAgendaRepository(tmp_path / "agenda.json"), hoje=date(2026, 6, 18))
+
+    engine.start("cliente_1")
+    engine.start("cliente_2")
+    engine.process_message("cliente_1", "agendar")
+    engine.process_message("cliente_1", "amanhã")
+    engine.process_message("cliente_2", "agendar")
+
+    estado_1 = engine.session_store.get_or_create("cliente_1")
+    estado_2 = engine.session_store.get_or_create("cliente_2")
+    assert estado_1.data == "2026-06-19"
+    assert estado_1.etapa == "servico"
+    assert estado_2.data is None
+    assert estado_2.etapa == "dia"
+
+
+def test_engine_processa_fluxo_de_agendamento_sem_input_print(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    engine = ConversationEngine(agenda_repository=repository, hoje=date(2026, 6, 18))
+
+    engine.start("cliente_1")
+    mensagens = ["agendar", "amanhã", "corte", "não", "manha", "10:00", "Marcos Eduardo", "14999999999", "sim"]
+    respostas = [engine.process_message("cliente_1", mensagem) for mensagem in mensagens]
+
+    assert "Agendamento confirmado" in respostas[-1]
+    assert repository.listar_agendamentos()[0]["data"] == "2026-06-19"
+    assert repository.listar_agendamentos()[0]["telefone"] == "14999999999"
+
+
+def test_engine_processa_consulta_por_telefone(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar_agendamentos([agendamento_base()])
+    engine = ConversationEngine(agenda_repository=repository, hoje=date(2026, 6, 18))
+
+    engine.start("cliente_1")
+    assert "telefone" in engine.process_message("cliente_1", "consultar")
+    resposta = engine.process_message("cliente_1", "(14) 99999-9999")
+
+    assert "Corte com Marcos em 18/06/2026 às 15:00" in resposta
+
+
+def test_engine_processa_cancelamento_por_telefone(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar_agendamentos([agendamento_base()])
+    engine = ConversationEngine(agenda_repository=repository, hoje=date(2026, 6, 18))
+
+    engine.start("cliente_1")
+    engine.process_message("cliente_1", "cancelar")
+    engine.process_message("cliente_1", "14999999999")
+    engine.process_message("cliente_1", "1")
+    resposta = engine.process_message("cliente_1", "sim")
+
+    assert "cancelado" in resposta.lower()
+    assert repository.listar_agendamentos()[0]["status"] == "cancelado"
+
+
+def test_engine_processa_remarcacao_por_telefone(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar_agendamentos([agendamento_base()])
+    engine = ConversationEngine(agenda_repository=repository, hoje=date(2026, 6, 18))
+
+    engine.start("cliente_1")
+    engine.process_message("cliente_1", "remarcar")
+    engine.process_message("cliente_1", "14999999999")
+    engine.process_message("cliente_1", "1")
+    engine.process_message("cliente_1", "19/06/2026")
+    engine.process_message("cliente_1", "tarde")
+    engine.process_message("cliente_1", "14:30")
+    resposta = engine.process_message("cliente_1", "sim")
+
+    agendamento = repository.listar_agendamentos()[0]
+    assert "remarcado" in resposta.lower()
+    assert agendamento["data"] == "2026-06-19"
+    assert agendamento["horario"] == "14:30"
+
+
+def test_engine_modo_loja_continua_funcionando(tmp_path):
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "loja.json")
+    solicitacoes = JsonAgendaRepository(tmp_path / "solicitacoes.json")
+    engine = ConversationEngine(
+        config=config,
+        agenda_repository=JsonAgendaRepository(tmp_path / "agenda.json"),
+        solicitacao_repository=solicitacoes,
+    )
+
+    inicio = engine.start("cliente_1")
+    resposta_categoria = engine.process_message("cliente_1", "ver produtos")
+
+    assert "loja" in inicio.lower()
+    assert "informática" in resposta_categoria
+
+
+def test_terminal_app_eh_fino_sem_regra_de_negocio_pesada():
+    codigo = inspect.getsource(run_terminal_app)
+
+    assert "ConversationEngine" in codigo
+    assert "input(" in codigo
+    assert "print(" in codigo
+    assert "AtendimentoFlow" not in codigo
+    assert "criar_agendamento" not in codigo
+    assert "cancelar_agendamento" not in codigo
+    assert "remarcar_agendamento" not in codigo
+
+
+def test_conversation_engine_nao_usa_input_ou_print():
+    codigo = inspect.getsource(engine_module)
+
+    assert "input(" not in codigo
+    assert "print(" not in codigo
