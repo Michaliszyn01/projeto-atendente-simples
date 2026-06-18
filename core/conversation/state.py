@@ -1,0 +1,17 @@
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+@dataclass
+class ConversationState:
+    etapa: str = "inicio"
+    data: Optional[str] = None
+    servico: Optional[str] = None
+    profissional_preferido: Optional[str] = None
+    periodo: Optional[str] = None
+    horario: Optional[str] = None
+    profissional: Optional[str] = None
+    nome: Optional[str] = None
+    categoria: Optional[str] = None
+    descricao_orcamento: Optional[str] = None
+    opcoes_horarios: list[dict[str, str]] = field(default_factory=list)

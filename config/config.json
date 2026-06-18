@@ -1,0 +1,28 @@
+{
+  "modo": "barbearia",
+  "nome_estabelecimento": "Barbearia Exemplo",
+  "usa_agendamento": true,
+  "usa_profissional": true,
+  "nome_profissional": "profissional",
+  "nome_servico": "serviço",
+  "opcoes_inicio": ["agendar", "falar com alguém"],
+  "servicos": {
+    "corte": 30,
+    "barba": 30,
+    "corte + barba": 60
+  },
+  "profissionais": ["Marcos", "Julio"],
+  "horarios": {
+    "manha": ["09:00", "09:30", "10:00", "10:30", "11:00", "11:30"],
+    "tarde": ["14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30"]
+  },
+  "mensagens": {
+    "inicio": "Olá! Eu sou o assistente virtual deste estabelecimento. Você quer agendar ou falar com alguém?",
+    "pergunta_dia": "Qual dia você quer agendar? Responda com hoje, amanhã ou uma data no formato DD/MM/AAAA.",
+    "pergunta_servico": "Qual serviço você quer?",
+    "pergunta_profissional": "Tem preferência por algum profissional?",
+    "pergunta_periodo": "Você prefere manhã ou tarde?",
+    "pergunta_nome": "Me fala seu nome.",
+    "humano": "Certo, vou chamar alguém para te atender."
+  }
+}

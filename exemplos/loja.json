@@ -1,0 +1,15 @@
+{
+  "modo": "loja",
+  "nome_estabelecimento": "Loja Exemplo",
+  "usa_agendamento": false,
+  "usa_profissional": false,
+  "opcoes_inicio": ["ver produtos", "fazer orçamento", "falar com alguém"],
+  "categorias": ["informática", "celulares", "acessórios"],
+  "mensagens": {
+    "inicio": "Olá! Eu sou o assistente virtual da loja. Você quer ver produtos, fazer orçamento ou falar com alguém?",
+    "pergunta_categoria": "Qual categoria de produto você procura?",
+    "pergunta_orcamento": "Me diga o que você precisa para eu registrar seu pedido.",
+    "pergunta_nome": "Me fala seu nome.",
+    "humano": "Certo, vou chamar um vendedor."
+  }
+}
