@@ -1,6 +1,6 @@
 from collections import defaultdict
 from datetime import date
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from core.config.config_loader import carregar_config
@@ -24,6 +24,13 @@ from core.scheduling.validators import (
     validar_telefone,
 )
 from core.storage.json_repository import JsonAgendaRepository
+
+
+OPCOES_AGENDAR = {"agendar", "marcar", "marcar horario"}
+OPCOES_CONSULTAR = {"consultar", "ver agendamento", "meu horario", "qual meu horario"}
+OPCOES_CANCELAR_AGENDAMENTO = {"cancelar", "desmarcar", "cancelar horario"}
+OPCOES_REMARCAR = {"remarcar", "trocar horario", "mudar horario", "mudar agendamento"}
+OPCOES_HUMANO = {"alguem", "falar com alguem", "atendente", "humano"}
 
 
 class AtendimentoFlow:
@@ -73,57 +80,40 @@ class AtendimentoFlow:
             self.state.etapa = "encerrado"
             return "Atendimento cancelado. Até mais!"
 
-        if etapa == "escolha_inicial":
-            return self._receber_escolha_inicial(mensagem)
-        if etapa == "consulta_telefone":
-            return self._receber_consulta_telefone(mensagem)
-        if etapa == "cancelamento_telefone":
-            return self._receber_cancelamento_telefone(mensagem)
-        if etapa == "cancelamento_escolha":
-            return self._receber_cancelamento_escolha(mensagem)
-        if etapa == "cancelamento_confirmacao":
-            return self._receber_cancelamento_confirmacao(mensagem)
-        if etapa == "remarcacao_telefone":
-            return self._receber_remarcacao_telefone(mensagem)
-        if etapa == "remarcacao_escolha":
-            return self._receber_remarcacao_escolha(mensagem)
-        if etapa == "remarcacao_dia":
-            return self._receber_remarcacao_dia(mensagem)
-        if etapa == "remarcacao_periodo":
-            return self._receber_remarcacao_periodo(mensagem)
-        if etapa == "remarcacao_sem_disponibilidade":
-            return self._receber_alternativa_remarcacao_sem_disponibilidade(mensagem)
-        if etapa == "remarcacao_horario":
-            return self._receber_remarcacao_horario(mensagem)
-        if etapa == "remarcacao_confirmacao":
-            return self._receber_remarcacao_confirmacao(mensagem)
-        if etapa == "dia":
-            return self._receber_dia(mensagem)
-        if etapa == "servico":
-            return self._receber_servico(mensagem)
-        if etapa == "profissional":
-            return self._receber_profissional(mensagem)
-        if etapa == "periodo":
-            return self._receber_periodo(mensagem)
-        if etapa == "sem_disponibilidade":
-            return self._receber_alternativa_sem_disponibilidade(mensagem)
-        if etapa == "horario":
-            return self._receber_horario(mensagem)
-        if etapa == "nome":
-            return self._receber_nome(mensagem)
-        if etapa == "telefone":
-            return self._receber_telefone(mensagem)
-        if etapa == "confirmacao":
-            return self._receber_confirmacao(mensagem)
-        if etapa == "loja_categoria":
-            return self._receber_categoria_loja(mensagem)
-        if etapa == "loja_orcamento":
-            return self._receber_orcamento_loja(mensagem)
-        if etapa == "loja_nome":
-            return self._receber_nome_loja(mensagem)
+        handler = self._handlers_por_etapa().get(etapa)
+        if handler is not None:
+            return handler(mensagem)
 
         self.encerrado = True
         return "Não consegui continuar o atendimento. Vamos encerrar por aqui."
+
+    def _handlers_por_etapa(self) -> dict[str, Callable[[str], str]]:
+        return {
+            "escolha_inicial": self._receber_escolha_inicial,
+            "consulta_telefone": self._receber_consulta_telefone,
+            "cancelamento_telefone": self._receber_cancelamento_telefone,
+            "cancelamento_escolha": self._receber_cancelamento_escolha,
+            "cancelamento_confirmacao": self._receber_cancelamento_confirmacao,
+            "remarcacao_telefone": self._receber_remarcacao_telefone,
+            "remarcacao_escolha": self._receber_remarcacao_escolha,
+            "remarcacao_dia": self._receber_remarcacao_dia,
+            "remarcacao_periodo": self._receber_remarcacao_periodo,
+            "remarcacao_sem_disponibilidade": self._receber_alternativa_remarcacao_sem_disponibilidade,
+            "remarcacao_horario": self._receber_remarcacao_horario,
+            "remarcacao_confirmacao": self._receber_remarcacao_confirmacao,
+            "dia": self._receber_dia,
+            "servico": self._receber_servico,
+            "profissional": self._receber_profissional,
+            "periodo": self._receber_periodo,
+            "sem_disponibilidade": self._receber_alternativa_sem_disponibilidade,
+            "horario": self._receber_horario,
+            "nome": self._receber_nome,
+            "telefone": self._receber_telefone,
+            "confirmacao": self._receber_confirmacao,
+            "loja_categoria": self._receber_categoria_loja,
+            "loja_orcamento": self._receber_orcamento_loja,
+            "loja_nome": self._receber_nome_loja,
+        }
 
     def _receber_escolha_inicial(self, mensagem: str) -> str:
         resposta = normalizar_texto(mensagem)
@@ -165,16 +155,16 @@ class AtendimentoFlow:
         return f"Resposta inválida. Responda com: {self._opcoes_inicio_texto()}."
 
     def _receber_consulta_telefone(self, mensagem: str) -> str:
-        telefone = validar_telefone(mensagem)
-        if telefone is None:
-            return f"Telefone inválido. {self.mensagem('consulta_pede_telefone')}"
+        agendamentos, erro = self._buscar_agendamentos_ativos_por_telefone(
+            mensagem,
+            "consulta_pede_telefone",
+            "agendamento_nao_encontrado",
+        )
+        if erro is not None:
+            return erro
 
-        agendamentos = buscar_agendamentos_ativos_por_telefone(self.repository, telefone)
         self.encerrado = True
         self.state.etapa = "encerrado"
-
-        if not agendamentos:
-            return self.mensagem("agendamento_nao_encontrado")
 
         return "Encontrei estes agendamentos:\n\n" + self._formatar_lista_agendamentos(
             agendamentos,
@@ -182,17 +172,14 @@ class AtendimentoFlow:
         )
 
     def _receber_cancelamento_telefone(self, mensagem: str) -> str:
-        telefone = validar_telefone(mensagem)
-        if telefone is None:
-            return f"Telefone inválido. {self.mensagem('cancelamento_pede_telefone')}"
+        agendamentos, erro = self._buscar_agendamentos_ativos_por_telefone(
+            mensagem,
+            "cancelamento_pede_telefone",
+            "agendamento_nao_encontrado",
+        )
+        if erro is not None:
+            return erro
 
-        agendamentos = buscar_agendamentos_ativos_por_telefone(self.repository, telefone)
-        if not agendamentos:
-            self.encerrado = True
-            self.state.etapa = "encerrado"
-            return self.mensagem("agendamento_nao_encontrado")
-
-        self.state.telefone = telefone
         self.state.agendamentos_encontrados = agendamentos
         self.state.etapa = "cancelamento_escolha"
         return (
@@ -202,22 +189,16 @@ class AtendimentoFlow:
         )
 
     def _receber_cancelamento_escolha(self, mensagem: str) -> str:
-        resposta = normalizar_texto(mensagem)
-        if resposta == "voltar":
-            self.state = ConversationState(etapa="escolha_inicial")
-            return self.iniciar()
+        agendamento, erro = self._selecionar_agendamento_da_lista(
+            mensagem,
+            "Opção inválida. Digite o número do agendamento que deseja cancelar ou digite voltar.",
+        )
+        if erro is not None:
+            return erro
 
-        try:
-            indice = int(mensagem.strip())
-        except ValueError:
-            return "Opção inválida. Digite o número do agendamento que deseja cancelar ou digite voltar."
-
-        if indice < 1 or indice > len(self.state.agendamentos_encontrados):
-            return "Opção inválida. Digite um número da lista ou digite voltar."
-
-        self.state.agendamento_selecionado = self.state.agendamentos_encontrados[indice - 1]
+        self.state.agendamento_selecionado = agendamento
         self.state.etapa = "cancelamento_confirmacao"
-        resumo = self._formatar_agendamento(self.state.agendamento_selecionado)
+        resumo = self._formatar_agendamento(agendamento)
         return f"{resumo}\n\n{self.mensagem('confirmacao_cancelamento')}"
 
     def _receber_cancelamento_confirmacao(self, mensagem: str) -> str:
@@ -248,17 +229,14 @@ class AtendimentoFlow:
         return self.mensagem("cancelamento_confirmado")
 
     def _receber_remarcacao_telefone(self, mensagem: str) -> str:
-        telefone = validar_telefone(mensagem)
-        if telefone is None:
-            return f"Telefone inválido. {self.mensagem('remarcacao_pede_telefone')}"
+        agendamentos, erro = self._buscar_agendamentos_ativos_por_telefone(
+            mensagem,
+            "remarcacao_pede_telefone",
+            "remarcacao_nao_encontrado",
+        )
+        if erro is not None:
+            return erro
 
-        agendamentos = buscar_agendamentos_ativos_por_telefone(self.repository, telefone)
-        if not agendamentos:
-            self.encerrado = True
-            self.state.etapa = "encerrado"
-            return self.mensagem("remarcacao_nao_encontrado") or self.mensagem("agendamento_nao_encontrado")
-
-        self.state.telefone = telefone
         self.state.agendamentos_encontrados = agendamentos
         self.state.etapa = "remarcacao_escolha"
         return (
@@ -268,20 +246,13 @@ class AtendimentoFlow:
         )
 
     def _receber_remarcacao_escolha(self, mensagem: str) -> str:
-        resposta = normalizar_texto(mensagem)
-        if resposta == "voltar":
-            self.state = ConversationState(etapa="escolha_inicial")
-            return self.iniciar()
+        agendamento, erro = self._selecionar_agendamento_da_lista(
+            mensagem,
+            self.mensagem("remarcacao_escolha_agendamento"),
+        )
+        if erro is not None:
+            return erro
 
-        try:
-            indice = int(mensagem.strip())
-        except ValueError:
-            return self.mensagem("remarcacao_escolha_agendamento")
-
-        if indice < 1 or indice > len(self.state.agendamentos_encontrados):
-            return "Opção inválida. Digite um número da lista ou digite voltar."
-
-        agendamento = self.state.agendamentos_encontrados[indice - 1]
         self.state.agendamento_selecionado = agendamento
         self.state.servico = str(agendamento.get("servico"))
         self.state.profissional = str(agendamento.get("profissional"))
@@ -309,23 +280,12 @@ class AtendimentoFlow:
         return self._mostrar_horarios_remarcacao_ou_alternativas()
 
     def _receber_alternativa_remarcacao_sem_disponibilidade(self, mensagem: str) -> str:
-        periodo = validar_periodo(mensagem, self.config)
-        if periodo is not None:
-            self.state.novo_periodo = periodo
-            return self._mostrar_horarios_remarcacao_ou_alternativas()
-
-        data, erro = validar_data_agendamento(mensagem, hoje=self.hoje)
-        if erro is None and data is not None:
-            self.state.nova_data = data
-            self.state.novo_periodo = None
-            self.state.etapa = "remarcacao_periodo"
-            return f"Certo, vamos tentar o dia {formatar_data_br(data)}. {self.mensagem('pergunta_periodo')}"
-        if erro is not None and "anterior ao dia atual" in erro:
-            return erro
-
-        return (
-            f"Não entendi. Digite outro período ({self._periodos_texto()}) ou outro dia "
-            "(hoje, amanhã ou DD/MM/AAAA)."
+        return self._receber_periodo_ou_data_alternativa(
+            mensagem=mensagem,
+            atributo_data="nova_data",
+            atributo_periodo="novo_periodo",
+            etapa_periodo="remarcacao_periodo",
+            mostrar_horarios=self._mostrar_horarios_remarcacao_ou_alternativas,
         )
 
     def _mostrar_horarios_remarcacao_ou_alternativas(self) -> str:
@@ -340,27 +300,17 @@ class AtendimentoFlow:
             self.encerrado = True
             return "Faltaram dados para consultar a agenda. Vamos encerrar por aqui."
 
-        opcoes = calcular_horarios_disponiveis(
+        return self._mostrar_horarios_ou_mensagem(
             data=self.state.nova_data,
             servico=self.state.servico,
             profissional_preferido=self.state.profissional,
             periodo=self.state.novo_periodo,
-            agenda=self.repository.listar(),
-            config=self.config,
             ignorar_agendamento_id=str(agendamento["id"]),
+            etapa_horario="remarcacao_horario",
+            etapa_sem_disponibilidade="remarcacao_sem_disponibilidade",
+            mensagem_sem_disponibilidade=self.mensagem("remarcacao_sem_horarios"),
+            pergunta_horario="Qual novo horário você quer?",
         )
-
-        if not opcoes:
-            self.state.opcoes_horarios = []
-            self.state.etapa = "remarcacao_sem_disponibilidade"
-            return (
-                f"{self.mensagem('remarcacao_sem_horarios')} "
-                f"Digite outro período ({self._periodos_texto()}) ou outro dia (hoje, amanhã ou DD/MM/AAAA)."
-            )
-
-        self.state.opcoes_horarios = opcoes
-        self.state.etapa = "remarcacao_horario"
-        return f"{self._formatar_opcoes_horarios(opcoes)}\n\nQual novo horário você quer?"
 
     def _receber_remarcacao_horario(self, mensagem: str) -> str:
         horario = normalizar_horario(mensagem)
@@ -448,23 +398,12 @@ class AtendimentoFlow:
         return self._mostrar_horarios_ou_alternativas()
 
     def _receber_alternativa_sem_disponibilidade(self, mensagem: str) -> str:
-        periodo = validar_periodo(mensagem, self.config)
-        if periodo is not None:
-            self.state.periodo = periodo
-            return self._mostrar_horarios_ou_alternativas()
-
-        data, erro = validar_data_agendamento(mensagem, hoje=self.hoje)
-        if erro is None and data is not None:
-            self.state.data = data
-            self.state.periodo = None
-            self.state.etapa = "periodo"
-            return f"Certo, vamos tentar o dia {formatar_data_br(data)}. {self.mensagem('pergunta_periodo')}"
-        if erro is not None and "anterior ao dia atual" in erro:
-            return erro
-
-        return (
-            f"Não entendi. Digite outro período ({self._periodos_texto()}) ou outro dia "
-            "(hoje, amanhã ou DD/MM/AAAA)."
+        return self._receber_periodo_ou_data_alternativa(
+            mensagem=mensagem,
+            atributo_data="data",
+            atributo_periodo="periodo",
+            etapa_periodo="periodo",
+            mostrar_horarios=self._mostrar_horarios_ou_alternativas,
         )
 
     def _mostrar_horarios_ou_alternativas(self) -> str:
@@ -472,27 +411,17 @@ class AtendimentoFlow:
             self.encerrado = True
             return "Faltaram dados para consultar a agenda. Vamos encerrar por aqui."
 
-        agenda = self.repository.listar()
-        opcoes = calcular_horarios_disponiveis(
+        return self._mostrar_horarios_ou_mensagem(
             data=self.state.data,
             servico=self.state.servico,
             profissional_preferido=self.state.profissional_preferido,
             periodo=self.state.periodo,
-            agenda=agenda,
-            config=self.config,
+            ignorar_agendamento_id=None,
+            etapa_horario="horario",
+            etapa_sem_disponibilidade="sem_disponibilidade",
+            mensagem_sem_disponibilidade="Não encontrei horários disponíveis para essa combinação.",
+            pergunta_horario="Qual horário você quer?",
         )
-
-        if not opcoes:
-            self.state.opcoes_horarios = []
-            self.state.etapa = "sem_disponibilidade"
-            return (
-                "Não encontrei horários disponíveis para essa combinação. "
-                f"Digite outro período ({self._periodos_texto()}) ou outro dia (hoje, amanhã ou DD/MM/AAAA)."
-            )
-
-        self.state.opcoes_horarios = opcoes
-        self.state.etapa = "horario"
-        return f"{self._formatar_opcoes_horarios(opcoes)}\n\nQual horário você quer?"
 
     def _receber_horario(self, mensagem: str) -> str:
         horario = normalizar_horario(mensagem)
@@ -594,6 +523,105 @@ class AtendimentoFlow:
         self.state.etapa = "encerrado"
         return "Solicitação registrada. Vou chamar alguém para continuar o atendimento."
 
+    def _buscar_agendamentos_ativos_por_telefone(
+        self,
+        mensagem: str,
+        chave_pergunta_telefone: str,
+        chave_nao_encontrado: str,
+    ) -> tuple[list[dict], str | None]:
+        telefone = validar_telefone(mensagem)
+        if telefone is None:
+            return [], f"Telefone inválido. {self.mensagem(chave_pergunta_telefone)}"
+
+        agendamentos = buscar_agendamentos_ativos_por_telefone(self.repository, telefone)
+        if not agendamentos:
+            self.encerrado = True
+            self.state.etapa = "encerrado"
+            return [], self.mensagem(chave_nao_encontrado) or self.mensagem("agendamento_nao_encontrado")
+
+        self.state.telefone = telefone
+        return agendamentos, None
+
+    def _selecionar_agendamento_da_lista(
+        self,
+        mensagem: str,
+        mensagem_invalida: str,
+    ) -> tuple[dict | None, str | None]:
+        if normalizar_texto(mensagem) == "voltar":
+            self.state = ConversationState(etapa="escolha_inicial")
+            return None, self.iniciar()
+
+        try:
+            indice = int(mensagem.strip())
+        except ValueError:
+            return None, mensagem_invalida
+
+        if indice < 1 or indice > len(self.state.agendamentos_encontrados):
+            return None, "Opção inválida. Digite um número da lista ou digite voltar."
+
+        return self.state.agendamentos_encontrados[indice - 1], None
+
+    def _receber_periodo_ou_data_alternativa(
+        self,
+        mensagem: str,
+        atributo_data: str,
+        atributo_periodo: str,
+        etapa_periodo: str,
+        mostrar_horarios: Callable[[], str],
+    ) -> str:
+        periodo = validar_periodo(mensagem, self.config)
+        if periodo is not None:
+            setattr(self.state, atributo_periodo, periodo)
+            return mostrar_horarios()
+
+        data, erro = validar_data_agendamento(mensagem, hoje=self.hoje)
+        if erro is None and data is not None:
+            setattr(self.state, atributo_data, data)
+            setattr(self.state, atributo_periodo, None)
+            self.state.etapa = etapa_periodo
+            return f"Certo, vamos tentar o dia {formatar_data_br(data)}. {self.mensagem('pergunta_periodo')}"
+        if erro is not None and "anterior ao dia atual" in erro:
+            return erro
+
+        return (
+            f"Não entendi. Digite outro período ({self._periodos_texto()}) ou outro dia "
+            "(hoje, amanhã ou DD/MM/AAAA)."
+        )
+
+    def _mostrar_horarios_ou_mensagem(
+        self,
+        data: str,
+        servico: str,
+        profissional_preferido: str | None,
+        periodo: str,
+        ignorar_agendamento_id: str | None,
+        etapa_horario: str,
+        etapa_sem_disponibilidade: str,
+        mensagem_sem_disponibilidade: str,
+        pergunta_horario: str,
+    ) -> str:
+        opcoes = calcular_horarios_disponiveis(
+            data=data,
+            servico=servico,
+            profissional_preferido=profissional_preferido,
+            periodo=periodo,
+            agenda=self.repository.listar(),
+            config=self.config,
+            ignorar_agendamento_id=ignorar_agendamento_id,
+        )
+
+        if not opcoes:
+            self.state.opcoes_horarios = []
+            self.state.etapa = etapa_sem_disponibilidade
+            return (
+                f"{mensagem_sem_disponibilidade} "
+                f"Digite outro período ({self._periodos_texto()}) ou outro dia (hoje, amanhã ou DD/MM/AAAA)."
+            )
+
+        self.state.opcoes_horarios = opcoes
+        self.state.etapa = etapa_horario
+        return f"{self._formatar_opcoes_horarios(opcoes)}\n\n{pergunta_horario}"
+
     def _formatar_opcoes_horarios(self, opcoes: list[dict[str, str]]) -> str:
         por_horario: dict[str, list[str]] = {}
 
@@ -684,22 +712,22 @@ class AtendimentoFlow:
         )
 
     def _eh_opcao_humano(self, resposta_normalizada: str) -> bool:
-        return resposta_normalizada in {"alguem", "falar com alguem", "atendente", "humano"} or any(
+        return resposta_normalizada in OPCOES_HUMANO or any(
             "falar com" in normalizar_texto(item) and normalizar_texto(item) == resposta_normalizada
             for item in self.config.get("opcoes_inicio", [])
         )
 
     def _eh_opcao_agendar(self, resposta_normalizada: str) -> bool:
-        return resposta_normalizada in {"agendar", "marcar", "marcar horario"}
+        return resposta_normalizada in OPCOES_AGENDAR
 
     def _eh_opcao_consultar(self, resposta_normalizada: str) -> bool:
-        return resposta_normalizada in {"consultar", "ver agendamento", "meu horario", "qual meu horario"}
+        return resposta_normalizada in OPCOES_CONSULTAR
 
     def _eh_opcao_cancelar_agendamento(self, resposta_normalizada: str) -> bool:
-        return resposta_normalizada in {"cancelar", "desmarcar", "cancelar horario"}
+        return resposta_normalizada in OPCOES_CANCELAR_AGENDAMENTO
 
     def _eh_opcao_remarcar(self, resposta_normalizada: str) -> bool:
-        return resposta_normalizada in {"remarcar", "trocar horario", "mudar horario", "mudar agendamento"}
+        return resposta_normalizada in OPCOES_REMARCAR
 
     def _validar_categoria(self, mensagem: str) -> str | None:
         valor = normalizar_texto(mensagem)

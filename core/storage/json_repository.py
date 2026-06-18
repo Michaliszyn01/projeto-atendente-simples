@@ -92,19 +92,20 @@ class JsonAgendaRepository:
         return None
 
     def cancelar_agendamento(self, agendamento_id: str) -> dict | None:
-        feito_em = datetime.now().isoformat(timespec="seconds")
+        feito_em = self._agora()
         agendamento = self.buscar_agendamento_por_id(agendamento_id)
         if agendamento is None:
             return None
 
-        historico = list(agendamento.get("historico", []))
-        historico.append({"acao": "cancelado", "feito_em": feito_em})
         return self.atualizar_agendamento(
             agendamento_id,
             {
                 "status": "cancelado",
                 "cancelado_em": feito_em,
-                "historico": historico,
+                "historico": self._historico_com_evento(
+                    agendamento,
+                    {"acao": "cancelado", "feito_em": feito_em},
+                ),
             },
         )
 
@@ -115,24 +116,21 @@ class JsonAgendaRepository:
         novo_horario: str,
         profissional: str,
     ) -> dict | None:
-        feito_em = datetime.now().isoformat(timespec="seconds")
+        feito_em = self._agora()
         agendamento = self.buscar_agendamento_por_id(agendamento_id)
         if agendamento is None:
             return None
 
-        historico = list(agendamento.get("historico", []))
-        historico.append(
-            {
-                "acao": "remarcado",
-                "data_anterior": agendamento.get("data"),
-                "horario_anterior": agendamento.get("horario"),
-                "profissional_anterior": agendamento.get("profissional"),
-                "data_nova": nova_data,
-                "horario_novo": novo_horario,
-                "profissional_novo": profissional,
-                "feito_em": feito_em,
-            }
-        )
+        evento = {
+            "acao": "remarcado",
+            "data_anterior": agendamento.get("data"),
+            "horario_anterior": agendamento.get("horario"),
+            "profissional_anterior": agendamento.get("profissional"),
+            "data_nova": nova_data,
+            "horario_novo": novo_horario,
+            "profissional_novo": profissional,
+            "feito_em": feito_em,
+        }
 
         return self.atualizar_agendamento(
             agendamento_id,
@@ -142,9 +140,17 @@ class JsonAgendaRepository:
                 "profissional": profissional,
                 "status": "agendado",
                 "remarcado_em": feito_em,
-                "historico": historico,
+                "historico": self._historico_com_evento(agendamento, evento),
             },
         )
+
+    def _agora(self) -> str:
+        return datetime.now().isoformat(timespec="seconds")
+
+    def _historico_com_evento(self, agendamento: dict, evento: dict) -> list[dict]:
+        historico = list(agendamento.get("historico", []))
+        historico.append(evento)
+        return historico
 
     def _garantir_arquivo(self) -> None:
         self.caminho.parent.mkdir(parents=True, exist_ok=True)
