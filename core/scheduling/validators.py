@@ -150,6 +150,17 @@ def validar_resposta_sim_nao(texto: str) -> str | None:
     return normalizar_resposta_sim_nao(texto)
 
 
+def normalizar_telefone(texto: str) -> str:
+    return re.sub(r"\D", "", texto)
+
+
+def validar_telefone(texto: str) -> str | None:
+    telefone = normalizar_telefone(texto)
+    if len(telefone) < 8:
+        return None
+    return telefone
+
+
 def horario_para_minutos(horario: str) -> int:
     hora, minuto = horario.split(":")
     return int(hora) * 60 + int(minuto)

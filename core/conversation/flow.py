@@ -1,9 +1,14 @@
-from datetime import date
+from collections import defaultdict
+from datetime import date, datetime
 from typing import Any
 from uuid import uuid4
 
 from core.config.config_loader import carregar_config
 from core.conversation.state import ConversationState
+from core.scheduling.appointment_queries import (
+    atualizar_status_agendamento,
+    buscar_agendamentos_ativos_por_telefone,
+)
 from core.scheduling.availability import calcular_horarios_disponiveis
 from core.scheduling.service import criar_agendamento
 from core.scheduling.validators import (
@@ -15,6 +20,7 @@ from core.scheduling.validators import (
     validar_profissional,
     validar_resposta_sim_nao,
     validar_servico,
+    validar_telefone,
 )
 from core.storage.json_repository import JsonAgendaRepository
 
@@ -37,21 +43,32 @@ class AtendimentoFlow:
     def iniciar(self) -> str:
         self.state = ConversationState(etapa="escolha_inicial")
         self.encerrado = False
-        return self.mensagem("inicio")
+        return self.mensagem("menu_inicial") or self.mensagem("inicio")
 
     def receber(self, mensagem: str) -> str:
         if self.encerrado:
             return "Atendimento já encerrado."
 
-        if normalizar_texto(mensagem) == "cancelar":
+        etapa = self.state.etapa
+        if normalizar_texto(mensagem) == "cancelar" and etapa not in {
+            "escolha_inicial",
+            "cancelamento_escolha",
+            "cancelamento_confirmacao",
+        }:
             self.encerrado = True
             self.state.etapa = "encerrado"
             return "Atendimento cancelado. Até mais!"
 
-        etapa = self.state.etapa
-
         if etapa == "escolha_inicial":
             return self._receber_escolha_inicial(mensagem)
+        if etapa == "consulta_telefone":
+            return self._receber_consulta_telefone(mensagem)
+        if etapa == "cancelamento_telefone":
+            return self._receber_cancelamento_telefone(mensagem)
+        if etapa == "cancelamento_escolha":
+            return self._receber_cancelamento_escolha(mensagem)
+        if etapa == "cancelamento_confirmacao":
+            return self._receber_cancelamento_confirmacao(mensagem)
         if etapa == "dia":
             return self._receber_dia(mensagem)
         if etapa == "servico":
@@ -66,6 +83,8 @@ class AtendimentoFlow:
             return self._receber_horario(mensagem)
         if etapa == "nome":
             return self._receber_nome(mensagem)
+        if etapa == "telefone":
+            return self._receber_telefone(mensagem)
         if etapa == "confirmacao":
             return self._receber_confirmacao(mensagem)
         if etapa == "loja_categoria":
@@ -86,9 +105,17 @@ class AtendimentoFlow:
             self.state.etapa = "encerrado"
             return self.mensagem("humano")
 
-        if self.config.get("usa_agendamento") and self._eh_opcao(resposta, "agendar"):
+        if self.config.get("usa_agendamento") and self._eh_opcao_agendar(resposta):
             self.state.etapa = "dia"
             return self.mensagem("pergunta_dia")
+
+        if self.config.get("usa_agendamento") and self._eh_opcao_consultar(resposta):
+            self.state.etapa = "consulta_telefone"
+            return self.mensagem("consulta_pede_telefone")
+
+        if self.config.get("usa_agendamento") and self._eh_opcao_cancelar_agendamento(resposta):
+            self.state.etapa = "cancelamento_telefone"
+            return self.mensagem("cancelamento_pede_telefone")
 
         if not self.config.get("usa_agendamento") and self.config.get("modo") == "loja":
             if self._eh_opcao(resposta, "ver produtos"):
@@ -99,6 +126,88 @@ class AtendimentoFlow:
                 return self.mensagem("pergunta_orcamento")
 
         return f"Resposta inválida. Responda com: {self._opcoes_inicio_texto()}."
+
+    def _receber_consulta_telefone(self, mensagem: str) -> str:
+        telefone = validar_telefone(mensagem)
+        if telefone is None:
+            return f"Telefone inválido. {self.mensagem('consulta_pede_telefone')}"
+
+        agendamentos = buscar_agendamentos_ativos_por_telefone(self.repository, telefone)
+        self.encerrado = True
+        self.state.etapa = "encerrado"
+
+        if not agendamentos:
+            return self.mensagem("agendamento_nao_encontrado")
+
+        return "Encontrei estes agendamentos:\n\n" + self._formatar_lista_agendamentos(agendamentos)
+
+    def _receber_cancelamento_telefone(self, mensagem: str) -> str:
+        telefone = validar_telefone(mensagem)
+        if telefone is None:
+            return f"Telefone inválido. {self.mensagem('cancelamento_pede_telefone')}"
+
+        agendamentos = buscar_agendamentos_ativos_por_telefone(self.repository, telefone)
+        if not agendamentos:
+            self.encerrado = True
+            self.state.etapa = "encerrado"
+            return self.mensagem("agendamento_nao_encontrado")
+
+        self.state.telefone = telefone
+        self.state.agendamentos_encontrados = agendamentos
+        self.state.etapa = "cancelamento_escolha"
+        return (
+            "Encontrei estes agendamentos ativos:\n\n"
+            f"{self._formatar_lista_agendamentos(agendamentos)}\n\n"
+            "Digite o número do agendamento que deseja cancelar ou digite voltar."
+        )
+
+    def _receber_cancelamento_escolha(self, mensagem: str) -> str:
+        resposta = normalizar_texto(mensagem)
+        if resposta == "voltar":
+            self.state = ConversationState(etapa="escolha_inicial")
+            return self.iniciar()
+
+        try:
+            indice = int(mensagem.strip())
+        except ValueError:
+            return "Opção inválida. Digite o número do agendamento que deseja cancelar ou digite voltar."
+
+        if indice < 1 or indice > len(self.state.agendamentos_encontrados):
+            return "Opção inválida. Digite um número da lista ou digite voltar."
+
+        self.state.agendamento_selecionado = self.state.agendamentos_encontrados[indice - 1]
+        self.state.etapa = "cancelamento_confirmacao"
+        resumo = self._formatar_agendamento(self.state.agendamento_selecionado)
+        return f"{resumo}\n\n{self.mensagem('confirmacao_cancelamento')}"
+
+    def _receber_cancelamento_confirmacao(self, mensagem: str) -> str:
+        resposta = validar_resposta_sim_nao(mensagem)
+        if resposta is None:
+            return "Resposta inválida. Digite sim para confirmar ou não para manter o agendamento."
+
+        if resposta == "nao":
+            self.encerrado = True
+            self.state.etapa = "encerrado"
+            return "Cancelamento não realizado. O agendamento continua ativo."
+
+        agendamento = self.state.agendamento_selecionado
+        if not agendamento:
+            self.encerrado = True
+            self.state.etapa = "encerrado"
+            return "Não consegui encontrar o agendamento selecionado. Vamos encerrar por aqui."
+
+        atualizado = atualizar_status_agendamento(
+            self.repository,
+            str(agendamento["id"]),
+            "cancelado",
+            {"cancelado_em": datetime.now().isoformat(timespec="seconds")},
+        )
+        self.encerrado = True
+        self.state.etapa = "encerrado"
+
+        if atualizado is None:
+            return "Não consegui cancelar esse agendamento. Tente novamente mais tarde."
+        return self.mensagem("cancelamento_confirmado")
 
     def _receber_dia(self, mensagem: str) -> str:
         data, erro = validar_data_agendamento(mensagem, hoje=self.hoje)
@@ -209,6 +318,16 @@ class AtendimentoFlow:
             return f"Nome inválido. {self.mensagem('pergunta_nome')}"
 
         self.state.nome = nome
+        self.state.etapa = "telefone"
+        return self.mensagem("pergunta_telefone")
+
+    def _receber_telefone(self, mensagem: str) -> str:
+        telefone = validar_telefone(mensagem)
+
+        if telefone is None:
+            return f"Telefone inválido. {self.mensagem('pergunta_telefone')}"
+
+        self.state.telefone = telefone
         self.state.etapa = "confirmacao"
         return self._montar_confirmacao()
 
@@ -301,6 +420,7 @@ class AtendimentoFlow:
         return (
             f"Nome: {self.state.nome}\n"
             f"{self.rotulo_servico().capitalize()}: {self.state.servico}\n"
+            f"Telefone: {self.state.telefone}\n"
             f"Dia: {formatar_data_br(self.state.data or '')}\n"
             f"Horário: {self.state.horario}\n"
             f"{self.rotulo_profissional().capitalize()}: {self.state.profissional}\n\n"
@@ -317,7 +437,9 @@ class AtendimentoFlow:
         return f"{self.mensagem('pergunta_categoria')} Categorias disponíveis: {self._categorias_texto()}."
 
     def mensagem(self, chave: str) -> str:
-        return str(self.config.get("mensagens", {}).get(chave, ""))
+        valor = str(self.config.get("mensagens", {}).get(chave, ""))
+        contexto = defaultdict(str, self.config)
+        return valor.format_map(contexto)
 
     def rotulo_profissional(self) -> str:
         return str(self.config.get("nome_profissional", "profissional"))
@@ -351,9 +473,31 @@ class AtendimentoFlow:
             for item in self.config.get("opcoes_inicio", [])
         )
 
+    def _eh_opcao_agendar(self, resposta_normalizada: str) -> bool:
+        return resposta_normalizada in {"agendar", "marcar"}
+
+    def _eh_opcao_consultar(self, resposta_normalizada: str) -> bool:
+        return resposta_normalizada in {"consultar", "ver agendamento"}
+
+    def _eh_opcao_cancelar_agendamento(self, resposta_normalizada: str) -> bool:
+        return resposta_normalizada in {"cancelar", "desmarcar"}
+
     def _validar_categoria(self, mensagem: str) -> str | None:
         valor = normalizar_texto(mensagem)
         for categoria in self.config.get("categorias", []):
             if normalizar_texto(categoria) == valor:
                 return categoria
         return None
+
+    def _formatar_lista_agendamentos(self, agendamentos: list[dict]) -> str:
+        linhas = []
+        for indice, agendamento in enumerate(agendamentos, start=1):
+            linhas.append(f"{indice}. {self._formatar_agendamento(agendamento)}")
+        return "\n".join(linhas)
+
+    def _formatar_agendamento(self, agendamento: dict) -> str:
+        servico = str(agendamento.get("servico", "")).capitalize()
+        profissional = agendamento.get("profissional", "")
+        data = formatar_data_br(str(agendamento.get("data", "")))
+        horario = agendamento.get("horario", "")
+        return f"{servico} com {profissional} em {data} às {horario}"

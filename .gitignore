@@ -1,11 +1,14 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.pytest_tmp/
+pytest_tmp/
 .venv/
 venv/
 .env
 
-data/*.json
+data/agenda.json
+data/solicitacoes.json
 !data/.gitkeep
 
 .DS_Store

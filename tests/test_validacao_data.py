@@ -1,7 +1,7 @@
 from datetime import date
 
 from core.conversation.flow import AtendimentoFlow
-from core.scheduling.validators import normalizar_data
+from core.scheduling.validators import normalizar_data, normalizar_telefone, validar_telefone
 from core.storage.json_repository import JsonAgendaRepository
 
 
@@ -34,3 +34,13 @@ def test_data_de_amanha_deve_ser_aceita():
 def test_data_invalida_deve_ser_rejeitada():
     assert normalizar_data("31/02/2026", hoje=HOJE) is None
     assert normalizar_data("2026-06-17", hoje=HOJE) is None
+
+
+def test_telefone_normalizado_remove_mascara():
+    assert normalizar_telefone("(14) 99999-9999") == "14999999999"
+    assert normalizar_telefone("14 99999 9999") == "14999999999"
+
+
+def test_telefone_invalido_deve_ser_rejeitado():
+    assert validar_telefone("123") is None
+    assert validar_telefone("(14) 9999-9999") == "1499999999"

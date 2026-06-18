@@ -34,7 +34,6 @@ def carregar_config(caminho: str | Path | None = None) -> dict[str, Any]:
 def validar_config(config: dict[str, Any]) -> None:
     obrigatorios = [
         "modo",
-        "nome_estabelecimento",
         "usa_agendamento",
         "usa_profissional",
         "opcoes_inicio",
@@ -52,6 +51,17 @@ def validar_config(config: dict[str, Any]) -> None:
         raise ConfigError("Campo 'opcoes_inicio' deve ser uma lista de textos.")
     if not isinstance(config["mensagens"], dict):
         raise ConfigError("Campo 'mensagens' deve ser um objeto.")
+
+    for campo in [
+        "nome_estabelecimento",
+        "endereco",
+        "telefone_estabelecimento",
+        "instagram",
+        "cidade",
+        "estado",
+    ]:
+        if campo in config and not isinstance(config[campo], str):
+            raise ConfigError(f"Campo '{campo}' deve ser texto quando informado.")
 
     validar_campos(config["mensagens"], ["inicio", "humano"], "mensagens")
 
@@ -75,6 +85,13 @@ def validar_config_agendamento(config: dict[str, Any]) -> None:
             "pergunta_profissional",
             "pergunta_periodo",
             "pergunta_nome",
+            "pergunta_telefone",
+            "consulta_pede_telefone",
+            "cancelamento_pede_telefone",
+            "confirmacao_cancelamento",
+            "cancelamento_confirmado",
+            "agendamento_nao_encontrado",
+            "menu_inicial",
         ],
         "mensagens",
     )

@@ -25,7 +25,7 @@ def test_loja_sem_agendamento_nao_pede_data_nem_horario(tmp_path):
     inicio = flow.iniciar()
     resposta = flow.receber("ver produtos")
 
-    assert "loja" in inicio
+    assert "loja" in inicio.lower()
     assert "categoria" in resposta.lower()
     assert "informática" in resposta
     assert "Qual dia" not in resposta
@@ -63,7 +63,9 @@ def test_agendamento_continua_funcionando_no_modo_barbearia(tmp_path):
     flow.receber("manha")
     flow.receber("10:00")
     flow.receber("Marcos Eduardo")
+    flow.receber("14999999999")
     resposta = flow.receber("sim")
 
     assert "Agendamento confirmado" in resposta
     assert agenda.listar()[0]["servico"] == "corte"
+    assert agenda.listar()[0]["telefone"] == "14999999999"

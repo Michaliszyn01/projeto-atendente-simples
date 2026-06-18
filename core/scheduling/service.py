@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -13,7 +14,7 @@ def criar_agendamento(
     config: dict[str, Any] | None = None,
 ) -> dict:
     config = config or carregar_config()
-    if not all([state.nome, state.servico, state.data, state.horario, state.profissional]):
+    if not all([state.nome, state.telefone, state.servico, state.data, state.horario, state.profissional]):
         raise ValueError("Não foi possível confirmar porque faltam dados do agendamento.")
 
     duracao = int(config["servicos"][state.servico])
@@ -25,12 +26,14 @@ def criar_agendamento(
     agendamento = {
         "id": str(uuid4()),
         "nome": state.nome,
+        "telefone": state.telefone,
         "servico": state.servico,
         "data": state.data,
         "horario": state.horario,
         "profissional": state.profissional,
         "duracao_minutos": duracao,
         "status": "agendado",
+        "criado_em": datetime.now().isoformat(timespec="seconds"),
     }
-    repository.adicionar(agendamento)
+    repository.adicionar_agendamento(agendamento)
     return agendamento

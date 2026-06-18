@@ -1,0 +1,14 @@
+[
+  {
+    "id": "exemplo-1",
+    "nome": "Cliente Exemplo",
+    "telefone": "14999999999",
+    "servico": "corte",
+    "data": "2026-06-18",
+    "horario": "15:00",
+    "profissional": "Marcos",
+    "duracao_minutos": 30,
+    "status": "agendado",
+    "criado_em": "2026-06-18T14:30:00"
+  }
+]

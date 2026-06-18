@@ -36,3 +36,28 @@ def test_repositorio_recria_json_corrompido_com_lista_vazia(tmp_path):
 
     assert repository.listar() == []
     assert caminho.read_text(encoding="utf-8").strip() == "[]"
+
+
+def test_repositorio_busca_agendamentos_ativos_por_telefone(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar_agendamentos(
+        [
+            {"id": "1", "telefone": "14999999999", "status": "agendado"},
+            {"id": "2", "telefone": "(14) 99999-9999", "status": "cancelado"},
+            {"id": "3", "telefone": "14888888888", "status": "agendado"},
+        ]
+    )
+
+    encontrados = repository.buscar_agendamentos_por_telefone("(14) 99999-9999")
+
+    assert [item["id"] for item in encontrados] == ["1"]
+
+
+def test_repositorio_atualiza_agendamento_por_id(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.adicionar_agendamento({"id": "1", "status": "agendado"})
+
+    atualizado = repository.atualizar_agendamento("1", {"status": "cancelado"})
+
+    assert atualizado["status"] == "cancelado"
+    assert repository.listar_agendamentos()[0]["status"] == "cancelado"

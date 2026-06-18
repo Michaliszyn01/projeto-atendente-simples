@@ -71,3 +71,28 @@ def test_horario_ocupado_some_somente_para_profissional_ocupado():
 
     assert {"horario": "15:00", "profissional": "Marcos"} not in opcoes
     assert {"horario": "15:00", "profissional": "Julio"} in opcoes
+
+
+def test_horario_cancelado_volta_a_ficar_disponivel():
+    agenda = [
+        {
+            "id": "1",
+            "nome": "Cliente",
+            "servico": "corte",
+            "data": "2026-06-16",
+            "horario": "15:00",
+            "profissional": "Marcos",
+            "duracao_minutos": 30,
+            "status": "cancelado",
+        }
+    ]
+
+    opcoes = calcular_horarios_disponiveis(
+        data="2026-06-16",
+        servico="corte",
+        profissional_preferido="Marcos",
+        periodo="tarde",
+        agenda=agenda,
+    )
+
+    assert {"horario": "15:00", "profissional": "Marcos"} in opcoes

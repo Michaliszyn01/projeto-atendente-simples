@@ -12,6 +12,9 @@ class ConversationState:
     horario: Optional[str] = None
     profissional: Optional[str] = None
     nome: Optional[str] = None
+    telefone: Optional[str] = None
     categoria: Optional[str] = None
     descricao_orcamento: Optional[str] = None
     opcoes_horarios: list[dict[str, str]] = field(default_factory=list)
+    agendamentos_encontrados: list[dict] = field(default_factory=list)
+    agendamento_selecionado: Optional[dict] = None

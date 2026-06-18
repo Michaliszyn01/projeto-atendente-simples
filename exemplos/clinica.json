@@ -1,11 +1,16 @@
 {
   "modo": "clinica",
   "nome_estabelecimento": "Clínica Exemplo",
+  "endereco": "Rua Exemplo, 123",
+  "telefone_estabelecimento": "(14) 99999-9999",
+  "instagram": "@estabelecimento",
+  "cidade": "Bauru",
+  "estado": "SP",
   "usa_agendamento": true,
   "usa_profissional": true,
   "nome_profissional": "médico",
   "nome_servico": "consulta",
-  "opcoes_inicio": ["agendar", "falar com alguém"],
+  "opcoes_inicio": ["agendar", "consultar", "cancelar", "falar com alguém"],
   "servicos": {
     "consulta clínica geral": 30,
     "avaliação": 45,
@@ -17,12 +22,19 @@
     "tarde": ["13:00", "13:30", "14:00", "14:30", "15:00", "15:30", "16:00"]
   },
   "mensagens": {
-    "inicio": "Olá! Eu sou o assistente virtual da clínica. Você quer agendar uma consulta ou falar com alguém?",
+    "inicio": "Olá! Eu sou o assistente virtual da {nome_estabelecimento}. O que você deseja fazer?\nResponda com:\n\n* agendar\n* consultar\n* cancelar\n* alguém",
+    "menu_inicial": "Olá! Eu sou o assistente virtual da {nome_estabelecimento}. O que você deseja fazer?\nResponda com:\n\n* agendar\n* consultar\n* cancelar\n* alguém",
     "pergunta_dia": "Qual dia você deseja agendar a consulta?",
     "pergunta_servico": "Qual tipo de consulta você deseja?",
     "pergunta_profissional": "Tem preferência por algum médico?",
     "pergunta_periodo": "Você prefere manhã ou tarde?",
     "pergunta_nome": "Me fala o nome do paciente.",
+    "pergunta_telefone": "Me informe seu telefone para contato.",
+    "consulta_pede_telefone": "Digite o telefone usado no agendamento.",
+    "cancelamento_pede_telefone": "Digite o telefone usado no agendamento.",
+    "confirmacao_cancelamento": "Tem certeza que deseja cancelar este agendamento? Responda sim ou não.",
+    "cancelamento_confirmado": "Agendamento cancelado com sucesso.",
+    "agendamento_nao_encontrado": "Não encontrei agendamentos ativos para esse telefone.",
     "humano": "Certo, vou chamar alguém da recepção."
   }
 }
