@@ -1,8 +1,12 @@
 # Status do Projeto
 
+## Última melhoria visual realizada
+
+O painel administrativo em Streamlit recebeu uma apresentação mais premium para demonstração comercial local. A tela agora possui cabeçalho visual com status da operação, cards de métricas em HTML/CSS, abas com nomes mais profissionais, empty states específicos, horários livres em pílulas visuais, sidebar mais limpa e tabelas menos poluídas. A melhoria não altera o core de atendimento, agendamento, cancelamento ou remarcação.
+
 ## Demo local preparada
 
-O projeto agora possui dados demo realistas para barbearia e documentação para abrir o painel localmente. A demonstração usa os JSON locais existentes, marca os registros demo e mantém o foco em apresentar agenda, próximos horários, cancelamentos, remarcações, horários disponíveis e solicitações sem alterar o core de negócio.
+O projeto possui dados demo realistas para barbearia e documentação para abrir o painel localmente. A demonstração usa os JSON locais existentes, marca os registros demo e mantém o foco em apresentar agenda, próximos horários, cancelamentos, remarcações, horários livres e solicitações sem trocar JSON por banco de dados.
 
 ## Onde o projeto está agora
 
@@ -36,10 +40,6 @@ O projeto está em fase de MVP local para pequenos negócios, com foco em valida
 O próximo passo técnico recomendado é:
 
 1. manter todos os testes passando;
-2. melhorar o painel demo;
+2. validar a demo visual com dados fictícios em uma apresentação local;
 3. criar uma API local simples;
 4. só depois integrar WhatsApp real.
-
-## Última melhoria realizada
-
-O painel administrativo demo foi melhorado visualmente para uma apresentação comercial, mantendo o core de atendimento intacto. A tela agora destaca melhor o nome do estabelecimento, deixa claro que é uma demonstração local, apresenta métricas no topo e organiza agenda do dia, próximos agendamentos, cancelamentos, remarcações, horários disponíveis e solicitações em abas mais claras.

@@ -1210,6 +1210,7 @@ def test_script_gerar_dados_demo_preserva_dados_nao_demo(tmp_path):
             [
                 {"id": "real-solicitacao", "nome": "Cliente Local"},
                 {"id": "demo-solicitacao-antiga", "origem": "demo"},
+                {"id": "sol-demo-legado", "nome": "Demo Antiga"},
             ],
             ensure_ascii=False,
         ),
@@ -1228,6 +1229,7 @@ def test_script_gerar_dados_demo_preserva_dados_nao_demo(tmp_path):
     assert not any(item["id"] == "demo-agenda-antigo" for item in agenda)
     assert any(item["id"] == "real-solicitacao" for item in solicitacoes)
     assert not any(item["id"] == "demo-solicitacao-antiga" for item in solicitacoes)
+    assert not any(item["id"] == "sol-demo-legado" for item in solicitacoes)
 
 
 def test_dados_demo_incluem_hoje_futuro_cancelamento_remarcacao_e_origem():

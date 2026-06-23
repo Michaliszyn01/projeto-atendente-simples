@@ -206,7 +206,12 @@ def _substituir_dados_demo(dados_atuais: list[dict], dados_demo: list[dict], id_
 
 def _eh_dado_demo(item: dict, id_prefix: str) -> bool:
     item_id = str(item.get("id", ""))
-    return item.get("origem") == DEMO_ORIGEM or item_id.startswith(id_prefix) or item_id.startswith("demo-")
+    return (
+        item.get("origem") == DEMO_ORIGEM
+        or item_id.startswith(id_prefix)
+        or item_id.startswith("demo-")
+        or item_id.startswith("sol-demo-")
+    )
 
 
 def _salvar_json(caminho: Path, dados: list[dict]) -> None:
