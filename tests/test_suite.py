@@ -1,5 +1,6 @@
 from datetime import date
 import inspect
+import json
 from pathlib import Path
 import re
 import shutil
@@ -11,6 +12,7 @@ from app.terminal_app import run_terminal_app
 from channels.base import IncomingMessage, OutgoingMessage
 from channels.fake_whatsapp import FakeWhatsAppChannel
 from channels.terminal import TerminalChannel
+from core.admin import formatters, reports
 from core.config.config_loader import ConfigError, PROJECT_ROOT, carregar_config
 import core.conversation.engine as engine_module
 from core.conversation.engine import ConversationEngine
@@ -18,6 +20,8 @@ from core.conversation.flow import AtendimentoFlow
 from core.scheduling.availability import calcular_horarios_disponiveis, tem_conflito
 from core.scheduling.validators import normalizar_data, normalizar_telefone, validar_telefone
 from core.storage.json_repository import DEFAULT_AGENDA_PATH, JsonAgendaRepository
+from scripts.gerar_dados_demo import CLIENTES_FICTICIOS, criar_agenda_demo, gerar_dados_demo
+from scripts.limpar_dados import limpar_dados
 
 
 HOJE = date(2026, 6, 17)
@@ -968,3 +972,454 @@ def test_terminal_continua_usando_mesma_engine_via_canal():
     assert "TerminalChannel" in codigo
     assert "engine.process_message" in codigo
     assert "OutgoingMessage" in codigo
+
+
+def test_admin_listar_agenda_por_data_retorna_apenas_agendados(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="ativo"),
+            agendamento_base(id="cancelado", status="cancelado", cancelado_em="2026-06-18T10:00:00"),
+            agendamento_base(id="outra-data", data="2026-06-19"),
+        ]
+    )
+
+    agendamentos = reports.listar_agendamentos_por_data("2026-06-18", repository)
+
+    assert [agendamento["id"] for agendamento in agendamentos] == ["ativo"]
+
+
+def test_admin_agenda_hoje_ignora_cancelados(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="ativo", data="2026-06-18"),
+            agendamento_base(id="cancelado", data="2026-06-18", status="cancelado"),
+        ]
+    )
+
+    agendamentos = reports.listar_agendamentos_hoje(repository, hoje=date(2026, 6, 18))
+
+    assert len(agendamentos) == 1
+    assert agendamentos[0]["id"] == "ativo"
+
+
+def test_admin_agenda_amanha_funciona(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="hoje", data="2026-06-18"),
+            agendamento_base(id="amanha", data="2026-06-19"),
+        ]
+    )
+
+    agendamentos = reports.listar_agendamentos_amanha(repository, hoje=date(2026, 6, 18))
+
+    assert [agendamento["id"] for agendamento in agendamentos] == ["amanha"]
+
+
+def test_admin_listar_por_profissional_funciona(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="marcos", profissional="Marcos"),
+            agendamento_base(id="julio", profissional="Julio"),
+            agendamento_base(id="marcos-cancelado", profissional="Marcos", status="cancelado"),
+        ]
+    )
+
+    agendamentos = reports.listar_agendamentos_por_profissional("Marcos", repository)
+
+    assert [agendamento["id"] for agendamento in agendamentos] == ["marcos"]
+
+
+def test_admin_cancelados_aparecem_no_relatorio_de_cancelados(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="ativo"),
+            agendamento_base(id="cancelado", status="cancelado", cancelado_em="2026-06-18T10:00:00"),
+        ]
+    )
+
+    cancelados = reports.listar_agendamentos_cancelados(repository)
+
+    assert [agendamento["id"] for agendamento in cancelados] == ["cancelado"]
+
+
+def test_admin_solicitacoes_loja_sao_listadas(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "solicitacoes.json")
+    repository.salvar(
+        [
+            {
+                "nome": "Eduardo",
+                "telefone": "14999999999",
+                "categoria": "orcamento",
+                "descricao": "Quero um orçamento",
+                "criado_em": "2026-06-18T10:00:00",
+                "status": "novo",
+            }
+        ]
+    )
+
+    solicitacoes = reports.listar_solicitacoes_loja(repository)
+
+    assert solicitacoes[0]["nome"] == "Eduardo"
+    assert solicitacoes[0]["descricao"] == "Quero um orçamento"
+
+
+def test_admin_resumo_do_dia_conta_servicos_corretamente(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="corte-1", servico="corte", horario="09:00"),
+            agendamento_base(id="corte-2", servico="corte", horario="10:00"),
+            agendamento_base(id="barba", servico="barba", horario="11:00"),
+            agendamento_base(id="cancelado", servico="barba", status="cancelado"),
+        ]
+    )
+
+    resumo = reports.gerar_resumo_do_dia("2026-06-18", repository)
+
+    assert resumo["servicos"] == {"corte": 2, "barba": 1}
+    assert resumo["total_agendamentos_ativos"] == 3
+    assert resumo["total_cancelados"] == 1
+
+
+def test_admin_resumo_do_dia_conta_profissionais_corretamente(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="marcos-1", profissional="Marcos", horario="09:00"),
+            agendamento_base(id="marcos-2", profissional="Marcos", horario="10:00"),
+            agendamento_base(id="julio", profissional="Julio", horario="11:00"),
+        ]
+    )
+
+    resumo = reports.gerar_resumo_do_dia("2026-06-18", repository)
+
+    assert resumo["por_profissional"] == {"Marcos": 2, "Julio": 1}
+    assert resumo["profissional_mais_atendimentos"] == "Marcos"
+    assert resumo["primeiro_horario"] == "09:00"
+    assert resumo["ultimo_horario"] == "11:00"
+
+
+def test_admin_horarios_disponiveis_por_data_periodo_funcionam(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar([agendamento_base(data="2026-06-18", horario="14:00", profissional="Marcos")])
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+
+    horarios = reports.listar_horarios_disponiveis(
+        data="2026-06-18",
+        periodo="tarde",
+        profissional="Marcos",
+        agenda_repository=repository,
+        config=config,
+        servico="corte",
+    )
+
+    assert "14:00" not in horarios["Marcos"]
+    assert "14:30" in horarios["Marcos"]
+
+
+def test_admin_formatador_lista_vazia_retorna_mensagem_clara():
+    assert formatters.formatar_lista_agendamentos([]) == "Nenhum agendamento encontrado."
+    assert formatters.formatar_solicitacoes([]) == "Nenhuma solicitação encontrada."
+    assert formatters.formatar_horarios_disponiveis({}) == "Nenhum horário disponível."
+
+
+def test_admin_formatador_agenda_mostra_nome_servico_profissional_e_telefone():
+    agendamento = agendamento_base(
+        nome="Eduardo",
+        servico="corte",
+        profissional="Marcos",
+        telefone="14999999999",
+    )
+
+    formatado = formatters.formatar_agendamento(agendamento)
+
+    assert formatado["cliente"] == "Eduardo"
+    assert formatado["serviço"] == "corte"
+    assert formatado["profissional"] == "Marcos"
+    assert formatado["telefone"] == "14999999999"
+
+
+def test_admin_formatador_tabela_agenda_retorna_colunas_esperadas():
+    tabela = formatters.formatar_tabela_agendamentos([agendamento_base()])
+
+    assert set(tabela[0]) == {
+        "Data",
+        "Horário",
+        "Serviço",
+        "Profissional",
+        "Cliente",
+        "Telefone",
+        "Status",
+    }
+
+
+def test_admin_formatar_contagem_tabela_ordena_e_aceita_colunas_customizadas():
+    tabela = formatters.formatar_contagem_tabela(
+        {"barba": 1, "corte": 3, "corte + barba": 2},
+        nome_coluna="Serviço",
+        valor_coluna="Total",
+    )
+
+    assert tabela == [
+        {"Serviço": "corte", "Total": 3},
+        {"Serviço": "corte + barba", "Total": 2},
+        {"Serviço": "barba", "Total": 1},
+    ]
+    assert formatters.formatar_contagem_tabela({}) == []
+    assert formatters.formatar_contagem_tabela(None) == []
+
+
+def test_script_gerar_dados_demo_cria_agenda_nao_vazia(tmp_path):
+    agenda_path = tmp_path / "agenda.json"
+    solicitacoes_path = tmp_path / "solicitacoes.json"
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+
+    agenda, solicitacoes = gerar_dados_demo(
+        agenda_path=agenda_path,
+        solicitacoes_path=solicitacoes_path,
+        config=config,
+        hoje=date(2026, 6, 18),
+    )
+
+    assert agenda
+    assert solicitacoes
+    assert json.loads(agenda_path.read_text(encoding="utf-8")) == agenda
+    assert json.loads(solicitacoes_path.read_text(encoding="utf-8")) == solicitacoes
+
+
+def test_script_gerar_dados_demo_preserva_dados_nao_demo(tmp_path):
+    agenda_path = tmp_path / "agenda.json"
+    solicitacoes_path = tmp_path / "solicitacoes.json"
+    agenda_path.write_text(
+        json.dumps(
+            [
+                agendamento_base(id="real-1"),
+                agendamento_base(id="demo-agenda-antigo", origem="demo"),
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    solicitacoes_path.write_text(
+        json.dumps(
+            [
+                {"id": "real-solicitacao", "nome": "Cliente Local"},
+                {"id": "demo-solicitacao-antiga", "origem": "demo"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+
+    agenda, solicitacoes = gerar_dados_demo(
+        agenda_path=agenda_path,
+        solicitacoes_path=solicitacoes_path,
+        config=config,
+        hoje=date(2026, 6, 18),
+    )
+
+    assert any(item["id"] == "real-1" for item in agenda)
+    assert not any(item["id"] == "demo-agenda-antigo" for item in agenda)
+    assert any(item["id"] == "real-solicitacao" for item in solicitacoes)
+    assert not any(item["id"] == "demo-solicitacao-antiga" for item in solicitacoes)
+
+
+def test_dados_demo_incluem_hoje_futuro_cancelamento_remarcacao_e_origem():
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+
+    agenda = criar_agenda_demo(config, hoje=date(2026, 6, 18))
+    datas = {agendamento["data"] for agendamento in agenda}
+    servicos = {agendamento["servico"] for agendamento in agenda}
+
+    assert "2026-06-18" in datas
+    assert any(data > "2026-06-18" for data in datas)
+    assert {"corte", "barba", "corte + barba"}.issubset(servicos)
+    assert any(agendamento["status"] == "cancelado" for agendamento in agenda)
+    assert any(agendamento.get("remarcado_em") for agendamento in agenda)
+    assert all(agendamento.get("origem") == "demo" for agendamento in agenda)
+
+
+def test_dados_demo_possuem_status_agendado_e_cancelado():
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+
+    agenda = criar_agenda_demo(config, hoje=date(2026, 6, 18))
+    status = {agendamento["status"] for agendamento in agenda}
+
+    assert "agendado" in status
+    assert "cancelado" in status
+
+
+def test_dados_demo_nao_usam_nomes_reais_sensiveis():
+    nomes_reais_do_projeto = {"Eduardo", "Marcos Eduardo"}
+
+    assert not nomes_reais_do_projeto.intersection(CLIENTES_FICTICIOS)
+
+
+def test_resumo_do_dia_funciona_com_dados_demo(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+    agenda = criar_agenda_demo(config, hoje=date(2026, 6, 18))
+    repository.salvar(agenda)
+
+    resumo = reports.gerar_resumo_do_dia("2026-06-18", repository)
+
+    assert resumo["total_agendamentos_ativos"] >= 1
+    assert resumo["servicos"]
+    assert resumo["por_profissional"]
+
+
+def test_limpar_dados_zera_agenda_e_solicitacoes(tmp_path):
+    agenda_path = tmp_path / "agenda.json"
+    solicitacoes_path = tmp_path / "solicitacoes.json"
+    agenda_path.write_text('[{"id": "1"}]', encoding="utf-8")
+    solicitacoes_path.write_text('[{"id": "2"}]', encoding="utf-8")
+
+    limpar_dados(agenda_path=agenda_path, solicitacoes_path=solicitacoes_path)
+
+    assert json.loads(agenda_path.read_text(encoding="utf-8")) == []
+    assert json.loads(solicitacoes_path.read_text(encoding="utf-8")) == []
+
+
+def test_relatorios_continuam_ignorando_cancelados_na_agenda_ativa(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar(
+        [
+            agendamento_base(id="ativo", status="agendado"),
+            agendamento_base(id="cancelado", status="cancelado"),
+        ]
+    )
+
+    agendamentos = reports.listar_agendamentos_por_data("2026-06-18", repository)
+
+    assert [agendamento["id"] for agendamento in agendamentos] == ["ativo"]
+
+
+def test_painel_importa_sem_executar_erro_grave():
+    import app.admin_dashboard as admin_dashboard
+
+    assert callable(admin_dashboard.main)
+
+
+def test_painel_tem_fallback_para_formatar_contagem_tabela(monkeypatch):
+    import app.admin_dashboard as admin_dashboard
+
+    monkeypatch.delattr(formatters, "formatar_contagem_tabela")
+
+    tabela = admin_dashboard._formatar_contagem_tabela({"barba": 1, "corte": 2})
+
+    assert tabela == [
+        {"Item": "corte", "Quantidade": 2},
+        {"Item": "barba", "Quantidade": 1},
+    ]
+
+
+def test_painel_main_renderiza_com_streamlit_falso_sem_argumentos_incompativeis(tmp_path, monkeypatch):
+    import app.admin_dashboard as admin_dashboard
+
+    fake_st = FakeStreamlit()
+    agenda_repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    solicitacoes_repository = JsonAgendaRepository(tmp_path / "solicitacoes.json")
+    agenda_repository.salvar([agendamento_base(data=date.today().isoformat())])
+    solicitacoes_repository.salvar([])
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+
+    def repository_factory(caminho=None):
+        if caminho == reports.DEFAULT_SOLICITACOES_PATH:
+            return solicitacoes_repository
+        return agenda_repository
+
+    monkeypatch.setattr(admin_dashboard, "st", fake_st)
+    monkeypatch.setattr(admin_dashboard, "carregar_config", lambda: config)
+    monkeypatch.setattr(admin_dashboard, "JsonAgendaRepository", repository_factory)
+
+    admin_dashboard.main()
+
+    assert fake_st.dataframes
+    assert all("hide_index" not in chamada for chamada in fake_st.dataframes)
+
+
+class FakeContext:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def metric(self, *args, **kwargs):
+        pass
+
+
+class FakeSidebar:
+    def header(self, *args, **kwargs):
+        pass
+
+    def selectbox(self, _label, options, **_kwargs):
+        return options[0] if options else None
+
+    def date_input(self, _label, value=None, **_kwargs):
+        return value
+
+    def checkbox(self, *args, **kwargs):
+        return False
+
+    def info(self, *args, **kwargs):
+        pass
+
+    def markdown(self, *args, **kwargs):
+        pass
+
+    def subheader(self, *args, **kwargs):
+        pass
+
+    def caption(self, *args, **kwargs):
+        pass
+
+
+class FakeStreamlit:
+    def __init__(self):
+        self.sidebar = FakeSidebar()
+        self.dataframes = []
+
+    def set_page_config(self, *args, **kwargs):
+        pass
+
+    def title(self, *args, **kwargs):
+        pass
+
+    def caption(self, *args, **kwargs):
+        pass
+
+    def tabs(self, nomes):
+        return [FakeContext() for _nome in nomes]
+
+    def columns(self, quantidade):
+        return [FakeContext() for _indice in range(quantidade)]
+
+    def subheader(self, *args, **kwargs):
+        pass
+
+    def text(self, *args, **kwargs):
+        pass
+
+    def markdown(self, *args, **kwargs):
+        pass
+
+    def write(self, *args, **kwargs):
+        pass
+
+    def code(self, *args, **kwargs):
+        pass
+
+    def info(self, *args, **kwargs):
+        pass
+
+    def dataframe(self, dados, **kwargs):
+        if "hide_index" in kwargs:
+            raise TypeError("hide_index não é aceito por este Streamlit falso")
+        self.dataframes.append(kwargs)

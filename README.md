@@ -92,6 +92,70 @@ O atendimento acontece no terminal. Digite uma das opções do menu inicial e si
 
 O `main.py` só chama `app/terminal_app.py`, que orquestra `TerminalChannel` e `ConversationEngine`. As regras de agendamento, consulta, cancelamento e remarcação não ficam no terminal nem no canal.
 
+## Painel administrativo local
+
+O projeto também possui um painel visual simples em Streamlit para o dono do estabelecimento acompanhar os dados locais:
+
+```bash
+streamlit run app/admin_dashboard.py
+```
+
+O painel mostra:
+
+```text
+dados básicos do estabelecimento vindos de config/config.json
+agenda por data
+agenda de hoje e amanhã pela seleção de data
+filtro por profissional
+agendamentos cancelados
+solicitações da loja em data/solicitacoes.json
+horários disponíveis por data, período, profissional e serviço
+resumo do dia com totais, serviços, profissionais, primeiro e último horário
+```
+
+Ele é apenas local, não possui login real nesta etapa e continua usando JSON como armazenamento. Ainda não existe IA, OpenAI, WhatsApp real, banco externo, Flask, FastAPI ou Django.
+
+Os dados reais continuam em:
+
+```text
+data/agenda.json
+data/solicitacoes.json
+```
+
+Esses arquivos podem conter dados reais de clientes e não devem ser enviados ao GitHub. Eles estão no `.gitignore`.
+
+Para instalar a dependência visual do painel:
+
+```bash
+pip install -r requirements.txt
+```
+
+Para preencher o painel com dados fictícios seguros para demonstração:
+
+```bash
+python scripts/gerar_dados_demo.py
+```
+
+O script cria agendamentos e solicitações fictícias em:
+
+```text
+data/agenda.json
+data/solicitacoes.json
+```
+
+Para limpar os dados locais e voltar os arquivos para listas vazias:
+
+```bash
+python scripts/limpar_dados.py
+```
+
+Fluxo sugerido para demonstração:
+
+```bash
+python scripts/gerar_dados_demo.py
+streamlit run app/admin_dashboard.py
+```
+
 ## Como testar
 
 ```bash
@@ -310,6 +374,18 @@ data/solicitacoes.json
 ```
 
 Eles começam como listas vazias (`[]`) e estão no `.gitignore`, porque podem conter dados reais de clientes. Não envie esses arquivos para o GitHub com dados reais.
+
+Para uma demonstração sem dados reais, rode:
+
+```bash
+python scripts/gerar_dados_demo.py
+```
+
+Para zerar os dados locais:
+
+```bash
+python scripts/limpar_dados.py
+```
 
 Exemplos seguros ficam em:
 
