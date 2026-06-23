@@ -1192,6 +1192,59 @@ def test_script_gerar_dados_demo_cria_agenda_nao_vazia(tmp_path):
     assert json.loads(solicitacoes_path.read_text(encoding="utf-8")) == solicitacoes
 
 
+def test_script_gerar_dados_demo_preserva_dados_nao_demo(tmp_path):
+    agenda_path = tmp_path / "agenda.json"
+    solicitacoes_path = tmp_path / "solicitacoes.json"
+    agenda_path.write_text(
+        json.dumps(
+            [
+                agendamento_base(id="real-1"),
+                agendamento_base(id="demo-agenda-antigo", origem="demo"),
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    solicitacoes_path.write_text(
+        json.dumps(
+            [
+                {"id": "real-solicitacao", "nome": "Cliente Local"},
+                {"id": "demo-solicitacao-antiga", "origem": "demo"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+
+    agenda, solicitacoes = gerar_dados_demo(
+        agenda_path=agenda_path,
+        solicitacoes_path=solicitacoes_path,
+        config=config,
+        hoje=date(2026, 6, 18),
+    )
+
+    assert any(item["id"] == "real-1" for item in agenda)
+    assert not any(item["id"] == "demo-agenda-antigo" for item in agenda)
+    assert any(item["id"] == "real-solicitacao" for item in solicitacoes)
+    assert not any(item["id"] == "demo-solicitacao-antiga" for item in solicitacoes)
+
+
+def test_dados_demo_incluem_hoje_futuro_cancelamento_remarcacao_e_origem():
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+
+    agenda = criar_agenda_demo(config, hoje=date(2026, 6, 18))
+    datas = {agendamento["data"] for agendamento in agenda}
+    servicos = {agendamento["servico"] for agendamento in agenda}
+
+    assert "2026-06-18" in datas
+    assert any(data > "2026-06-18" for data in datas)
+    assert {"corte", "barba", "corte + barba"}.issubset(servicos)
+    assert any(agendamento["status"] == "cancelado" for agendamento in agenda)
+    assert any(agendamento.get("remarcado_em") for agendamento in agenda)
+    assert all(agendamento.get("origem") == "demo" for agendamento in agenda)
+
+
 def test_dados_demo_possuem_status_agendado_e_cancelado():
     config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
 
@@ -1272,7 +1325,7 @@ def test_painel_main_renderiza_com_streamlit_falso_sem_argumentos_incompativeis(
     fake_st = FakeStreamlit()
     agenda_repository = JsonAgendaRepository(tmp_path / "agenda.json")
     solicitacoes_repository = JsonAgendaRepository(tmp_path / "solicitacoes.json")
-    agenda_repository.salvar([agendamento_base()])
+    agenda_repository.salvar([agendamento_base(data=date.today().isoformat())])
     solicitacoes_repository.salvar([])
     config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
 

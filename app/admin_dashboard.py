@@ -20,20 +20,28 @@ def main() -> None:
     config = carregar_config()
     agenda_repository = JsonAgendaRepository()
     solicitacoes_repository = JsonAgendaRepository(reports.DEFAULT_SOLICITACOES_PATH)
+    agenda = agenda_repository.listar()
+    solicitacoes = reports.listar_solicitacoes_loja(solicitacoes_repository)
 
     _mostrar_cabecalho(config)
-    filtros = _sidebar(config)
+    filtros = _sidebar(config, agenda)
     data_iso = filtros["data"].isoformat()
 
     resumo = reports.gerar_resumo_do_dia(data_iso, agenda_repository)
-    solicitacoes = reports.listar_solicitacoes_loja(solicitacoes_repository)
-    _mostrar_metricas(resumo, len(solicitacoes))
+    agendamentos_filtrados = _filtrar_agendamentos(agenda, data_iso, filtros)
+    proximos = _proximos_agendamentos(agenda, filtros)
+    cancelados = _filtrar_cancelados(agenda, data_iso, filtros)
+    remarcados = _filtrar_remarcados(agenda, data_iso, filtros)
+
+    _mostrar_metricas(resumo, len(solicitacoes), proximos, remarcados)
 
     abas = st.tabs(
         [
             "Visão geral",
-            "Agenda",
-            "Cancelados",
+            "Agenda do dia",
+            "Próximos",
+            "Cancelamentos",
+            "Remarcações",
             "Horários disponíveis",
             "Solicitações",
             "Dados demo / Ajuda",
@@ -41,28 +49,39 @@ def main() -> None:
     )
 
     with abas[0]:
-        _mostrar_visao_geral(resumo)
+        _mostrar_visao_geral(resumo, agendamentos_filtrados, proximos, cancelados, remarcados)
 
     with abas[1]:
-        _mostrar_agenda(agenda_repository, data_iso, filtros["profissional"])
+        st.subheader("Agenda do dia")
+        _mostrar_tabela(_formatar_agendamentos_painel(agendamentos_filtrados))
 
     with abas[2]:
-        cancelados = reports.listar_agendamentos_cancelados(agenda_repository, data=data_iso)
-        _mostrar_tabela(formatters.formatar_tabela_cancelados(cancelados))
+        st.subheader("Próximos agendamentos")
+        _mostrar_tabela(_formatar_agendamentos_painel(proximos))
 
     with abas[3]:
-        _mostrar_horarios_disponiveis(agenda_repository, config, data_iso, filtros)
+        st.subheader("Resumo de cancelamentos")
+        _mostrar_tabela(_formatar_agendamentos_painel(cancelados))
 
     with abas[4]:
-        _mostrar_tabela(formatters.formatar_tabela_solicitacoes(solicitacoes))
+        st.subheader("Resumo de remarcações")
+        _mostrar_tabela(_formatar_agendamentos_painel(remarcados))
 
     with abas[5]:
+        _mostrar_horarios_disponiveis(agenda_repository, config, data_iso, filtros)
+
+    with abas[6]:
+        st.subheader("Solicitações da loja")
+        _mostrar_tabela(formatters.formatar_tabela_solicitacoes(solicitacoes))
+
+    with abas[7]:
         _mostrar_ajuda_demo()
 
 
 def _mostrar_cabecalho(config: dict[str, Any]) -> None:
     nome_estabelecimento = config.get("nome_estabelecimento", "Estabelecimento")
-    st.title(f"Painel Administrativo - {nome_estabelecimento}")
+    st.title(f"Painel de Operação - {nome_estabelecimento}")
+    st.caption("Painel local de demonstração para acompanhar agenda, atendimentos e solicitações.")
 
     detalhes = [
         _cidade_estado(config),
@@ -75,8 +94,8 @@ def _mostrar_cabecalho(config: dict[str, Any]) -> None:
         st.caption(" | ".join(detalhes))
 
 
-def _sidebar(config: dict[str, Any]) -> dict[str, Any]:
-    st.sidebar.header("Filtros")
+def _sidebar(config: dict[str, Any], agenda: list[dict]) -> dict[str, Any]:
+    st.sidebar.header("Filtros da demonstração")
     atalho_data = st.sidebar.selectbox("Agenda", ["Hoje", "Amanhã", "Escolher data"])
     if atalho_data == "Hoje":
         data_selecionada = date.today()
@@ -85,15 +104,16 @@ def _sidebar(config: dict[str, Any]) -> dict[str, Any]:
     else:
         data_selecionada = st.sidebar.date_input("Data", value=date.today())
 
-    profissionais = ["Todos"] + list(config.get("profissionais", []))
-    profissional = st.sidebar.selectbox("Profissional", profissionais)
-    profissional_filtro = None if profissional == "Todos" else profissional
+    status = st.sidebar.selectbox("Status", ["Todos", "Agendado", "Cancelado", "Remarcado"])
+
+    servicos = _opcoes_unicas(config.get("servicos", {}).keys(), (item.get("servico") for item in agenda))
+    servico = st.sidebar.selectbox("Serviço", ["Todos"] + servicos) if servicos else "Todos"
+
+    profissionais = _opcoes_unicas(config.get("profissionais", []), (item.get("profissional") for item in agenda))
+    profissional = st.sidebar.selectbox("Profissional", ["Todos"] + profissionais) if profissionais else "Todos"
 
     periodos = list(config.get("horarios", {}).keys()) or ["manha", "tarde"]
-    periodo = st.sidebar.selectbox("Período", periodos)
-
-    servicos = list(config.get("servicos", {}).keys())
-    servico = st.sidebar.selectbox("Serviço", servicos) if servicos else None
+    periodo = st.sidebar.selectbox("Período para horários livres", periodos)
 
     modo_demo = st.sidebar.checkbox("Estou usando dados demo")
     if modo_demo:
@@ -107,25 +127,37 @@ def _sidebar(config: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "data": data_selecionada,
-        "profissional": profissional_filtro,
+        "status": None if status == "Todos" else status.lower(),
+        "servico": None if servico == "Todos" else servico,
+        "profissional": None if profissional == "Todos" else profissional,
         "periodo": periodo,
-        "servico": servico,
     }
 
 
-def _mostrar_metricas(resumo: dict[str, Any], total_solicitacoes: int) -> None:
+def _mostrar_metricas(
+    resumo: dict[str, Any],
+    total_solicitacoes: int,
+    proximos: list[dict],
+    remarcados: list[dict],
+) -> None:
     colunas = st.columns(6)
     colunas[0].metric("Agendamentos no dia", resumo.get("total_agendamentos_ativos", 0))
     colunas[1].metric("Cancelamentos no dia", resumo.get("total_cancelados", 0))
     colunas[2].metric("Serviços no dia", sum(resumo.get("servicos", {}).values()))
     colunas[3].metric("Solicitações da loja", total_solicitacoes)
-    colunas[4].metric("Profissional mais ocupado", resumo.get("profissional_mais_atendimentos") or "-")
-    colunas[5].metric("Próximo horário", resumo.get("proximo_horario") or "-")
+    colunas[4].metric("Remarcações no dia", len(remarcados))
+    colunas[5].metric("Próximo horário", _proximo_horario(proximos) or "-")
 
 
-def _mostrar_visao_geral(resumo: dict[str, Any]) -> None:
-    st.subheader("Resumo do dia")
-    st.text(formatters.formatar_resumo_do_dia(resumo))
+def _mostrar_visao_geral(
+    resumo: dict[str, Any],
+    agendamentos: list[dict],
+    proximos: list[dict],
+    cancelados: list[dict],
+    remarcados: list[dict],
+) -> None:
+    st.subheader("Visão geral da operação")
+    st.write(formatters.formatar_resumo_do_dia(resumo))
 
     colunas = st.columns(2)
     with colunas[0]:
@@ -135,22 +167,21 @@ def _mostrar_visao_geral(resumo: dict[str, Any]) -> None:
         st.markdown("**Quantidade por profissional**")
         _mostrar_tabela(_formatar_contagem_tabela(resumo.get("por_profissional", {})))
 
+    colunas = st.columns(2)
+    with colunas[0]:
+        st.markdown("**Agenda do dia**")
+        _mostrar_tabela(_formatar_agendamentos_painel(agendamentos[:5]))
+    with colunas[1]:
+        st.markdown("**Próximos agendamentos**")
+        _mostrar_tabela(_formatar_agendamentos_painel(proximos[:5]))
 
-def _mostrar_agenda(
-    agenda_repository: JsonAgendaRepository,
-    data_iso: str,
-    profissional: str | None,
-) -> None:
-    if profissional:
-        agendamentos = reports.listar_agendamentos_por_profissional(
-            profissional,
-            agenda_repository,
-            data=data_iso,
-        )
-    else:
-        agendamentos = reports.listar_agendamentos_por_data(data_iso, agenda_repository)
-
-    _mostrar_tabela(formatters.formatar_tabela_agendamentos(agendamentos))
+    colunas = st.columns(2)
+    with colunas[0]:
+        st.markdown("**Cancelamentos**")
+        _mostrar_tabela(_formatar_agendamentos_painel(cancelados[:5]))
+    with colunas[1]:
+        st.markdown("**Remarcações**")
+        _mostrar_tabela(_formatar_agendamentos_painel(remarcados[:5]))
 
 
 def _mostrar_horarios_disponiveis(
@@ -159,6 +190,7 @@ def _mostrar_horarios_disponiveis(
     data_iso: str,
     filtros: dict[str, Any],
 ) -> None:
+    st.subheader("Horários disponíveis")
     st.write("Horários livres considerando os agendamentos ativos da data selecionada.")
     horarios = reports.listar_horarios_disponiveis(
         data=data_iso,
@@ -174,7 +206,7 @@ def _mostrar_horarios_disponiveis(
         st.write(", ".join(lista_horarios) if lista_horarios else "Sem horários livres.")
 
     if not horarios:
-        st.info("Nenhum horário disponível.")
+        st.info("Nenhum horário disponível para os filtros selecionados.")
 
 
 def _mostrar_ajuda_demo() -> None:
@@ -196,12 +228,97 @@ def _mostrar_ajuda_demo() -> None:
     st.info("Atenção: data/agenda.json e data/solicitacoes.json podem conter dados reais. Não envie esses arquivos para o GitHub.")
 
 
+def _filtrar_agendamentos(agenda: list[dict], data_iso: str, filtros: dict[str, Any]) -> list[dict]:
+    return _ordenar_agendamentos(
+        item
+        for item in agenda
+        if item.get("data") == data_iso
+        and _passa_status(item, filtros.get("status"))
+        and _passa_servico(item, filtros.get("servico"))
+        and _passa_profissional(item, filtros.get("profissional"))
+    )
+
+
+def _filtrar_cancelados(agenda: list[dict], data_iso: str, filtros: dict[str, Any]) -> list[dict]:
+    return _ordenar_agendamentos(
+        item
+        for item in agenda
+        if item.get("data") == data_iso
+        and item.get("status") == "cancelado"
+        and _passa_servico(item, filtros.get("servico"))
+        and _passa_profissional(item, filtros.get("profissional"))
+    )
+
+
+def _filtrar_remarcados(agenda: list[dict], data_iso: str, filtros: dict[str, Any]) -> list[dict]:
+    return _ordenar_agendamentos(
+        item
+        for item in agenda
+        if item.get("data") == data_iso
+        and _foi_remarcado(item)
+        and _passa_servico(item, filtros.get("servico"))
+        and _passa_profissional(item, filtros.get("profissional"))
+    )
+
+
+def _proximos_agendamentos(agenda: list[dict], filtros: dict[str, Any], limite: int = 5) -> list[dict]:
+    hoje_iso = date.today().isoformat()
+    proximos = _ordenar_agendamentos(
+        item
+        for item in agenda
+        if item.get("status") == "agendado"
+        and str(item.get("data", "")) >= hoje_iso
+        and _passa_servico(item, filtros.get("servico"))
+        and _passa_profissional(item, filtros.get("profissional"))
+    )
+    return proximos[:limite]
+
+
+def _passa_status(agendamento: dict, status: str | None) -> bool:
+    if status is None:
+        return True
+    if status == "remarcado":
+        return _foi_remarcado(agendamento)
+    return agendamento.get("status") == status
+
+
+def _passa_servico(agendamento: dict, servico: str | None) -> bool:
+    return servico is None or agendamento.get("servico") == servico
+
+
+def _passa_profissional(agendamento: dict, profissional: str | None) -> bool:
+    return profissional is None or agendamento.get("profissional") == profissional
+
+
+def _foi_remarcado(agendamento: dict) -> bool:
+    if agendamento.get("remarcado_em"):
+        return True
+    return any(evento.get("acao") == "remarcado" for evento in agendamento.get("historico", []))
+
+
+def _formatar_agendamentos_painel(agendamentos: list[dict]) -> list[dict]:
+    return [
+        {
+            "Data": _formatar_data(item.get("data", "")),
+            "Horário": item.get("horario", ""),
+            "Cliente": item.get("nome", ""),
+            "Serviço": _capitalizar(str(item.get("servico", ""))),
+            "Profissional": item.get("profissional", ""),
+            "Telefone": item.get("telefone", ""),
+            "Status": _status_visual(item),
+            "Cancelado em": item.get("cancelado_em", ""),
+            "Remarcado em": item.get("remarcado_em", ""),
+        }
+        for item in agendamentos
+    ]
+
+
 def _mostrar_tabela(dados: list[dict] | str) -> None:
     if isinstance(dados, str):
         st.info(dados)
         return
     if not dados:
-        st.info("Nenhum registro encontrado.")
+        st.info("Nenhum registro encontrado para os filtros selecionados.")
         return
     st.dataframe(dados, use_container_width=True)
 
@@ -230,6 +347,53 @@ def _formatar_contagem_tabela(contagem: dict | None) -> list[dict]:
             reverse=True,
         )
     ]
+
+
+def _ordenar_agendamentos(agendamentos) -> list[dict]:
+    return sorted(
+        list(agendamentos),
+        key=lambda item: (
+            str(item.get("data", "")),
+            str(item.get("horario", "")),
+            str(item.get("profissional", "")),
+        ),
+    )
+
+
+def _opcoes_unicas(*listas) -> list[str]:
+    opcoes = []
+    for lista in listas:
+        for item in lista:
+            if item and item not in opcoes:
+                opcoes.append(item)
+    return sorted(opcoes)
+
+
+def _proximo_horario(proximos: list[dict]) -> str | None:
+    if not proximos:
+        return None
+    primeiro = proximos[0]
+    data_item = _formatar_data(primeiro.get("data", ""))
+    horario = primeiro.get("horario", "")
+    return f"{data_item} {horario}".strip()
+
+
+def _status_visual(agendamento: dict) -> str:
+    if agendamento.get("status") == "cancelado":
+        return "Cancelado"
+    if _foi_remarcado(agendamento):
+        return "Remarcado"
+    if agendamento.get("status") == "agendado":
+        return "Agendado"
+    return str(agendamento.get("status", "")).capitalize()
+
+
+def _formatar_data(data_iso: str) -> str:
+    return formatters.formatar_data_br(str(data_iso))
+
+
+def _capitalizar(texto: str) -> str:
+    return " ".join(parte.capitalize() for parte in texto.split())
 
 
 def _cidade_estado(config: dict[str, Any]) -> str:
