@@ -7,8 +7,10 @@ import shutil
 from uuid import uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.terminal_app import run_terminal_app
+from app.webhook_api import app as webhook_app
 from channels.base import IncomingMessage, OutgoingMessage
 from channels.fake_whatsapp import FakeWhatsAppChannel
 from channels.terminal import TerminalChannel
@@ -17,9 +19,13 @@ from core.config.config_loader import ConfigError, PROJECT_ROOT, carregar_config
 import core.conversation.engine as engine_module
 from core.conversation.engine import ConversationEngine
 from core.conversation.flow import AtendimentoFlow
+from core.conversation.state import ConversationState
 from core.scheduling.availability import calcular_horarios_disponiveis, tem_conflito
-from core.scheduling.validators import normalizar_data, normalizar_telefone, validar_telefone
+from core.scheduling.validators import normalizar_data, normalizar_telefone, normalizar_telefone_whatsapp, validar_telefone
 from core.storage.json_repository import DEFAULT_AGENDA_PATH, JsonAgendaRepository
+from core.storage.migrate_json_to_sqlite import migrar_json_para_sqlite
+from core.storage.repository_factory import criar_agenda_repository
+from core.storage.sqlite_repository import SQLiteAgendaRepository, SQLiteSessionStore
 from scripts.gerar_dados_demo import CLIENTES_FICTICIOS, criar_agenda_demo, gerar_dados_demo
 from scripts.limpar_dados import limpar_dados
 
@@ -56,6 +62,120 @@ def agendamento_base(**extras):
     }
     agendamento.update(extras)
     return agendamento
+
+
+def webhook_client(
+    tmp_path,
+    hoje: date | None = None,
+    monkeypatch: pytest.MonkeyPatch | None = None,
+) -> tuple[TestClient, SQLiteAgendaRepository]:
+    if monkeypatch is not None:
+        for env_var in (
+            "WEBHOOK_API_KEY",
+            "META_WHATSAPP_TOKEN",
+            "META_WHATSAPP_PHONE_NUMBER_ID",
+            "META_WHATSAPP_VERIFY_TOKEN",
+            "META_GRAPH_VERSION",
+        ):
+            monkeypatch.delenv(env_var, raising=False)
+    try:
+        delattr(webhook_app.state, "meta_client")
+    except (AttributeError, KeyError):
+        pass
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+    config["storage"] = {"type": "sqlite", "path": str(tmp_path / "agenda.db")}
+    repository = SQLiteAgendaRepository(tmp_path / "agenda.db")
+    webhook_app.state.engine = ConversationEngine(
+        config=config,
+        agenda_repository=repository,
+        hoje=hoje,
+    )
+    return TestClient(webhook_app), repository
+
+
+def webhook_auth_headers(monkeypatch: pytest.MonkeyPatch, api_key: str = "segredo") -> dict[str, str]:
+    monkeypatch.setenv("WEBHOOK_API_KEY", api_key)
+    return {"X-API-Key": api_key}
+
+
+class FakeMetaWhatsAppClient:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def send_text_message(self, to: str, text: str) -> dict:
+        self.calls.append({"to": to, "text": text})
+        return {"ok": True, "provider": "fake"}
+
+
+def meta_text_payload(
+    text: str = "agendar",
+    phone: str = "5514999999999",
+    message_id: str = "wamid.fake-1",
+) -> dict:
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "waba-id",
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "metadata": {
+                                "display_phone_number": "5514000000000",
+                                "phone_number_id": "123456",
+                            },
+                            "contacts": [{"profile": {"name": "Eduardo"}, "wa_id": phone}],
+                            "messages": [
+                                {
+                                    "from": phone,
+                                    "id": message_id,
+                                    "timestamp": "1719250000",
+                                    "type": "text",
+                                    "text": {"body": text},
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def meta_status_payload() -> dict:
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "statuses": [
+                                {
+                                    "id": "wamid.sent-1",
+                                    "status": "delivered",
+                                    "recipient_id": "5514999999999",
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        ],
+    }
+
+
+def assert_humano_solicitado(flow, resposta: str, etapa_origem: str):
+    assert "chamar" in resposta.lower() or "encaminhar" in resposta.lower()
+    assert "inválid" not in resposta.lower()
+    assert flow.encerrado is True
+    assert flow.state.etapa == "encerrado"
+    assert flow.state.humano_solicitado is True
+    assert flow.state.etapa_antes_humano == etapa_origem
 
 
 def test_fluxo_completo_salva_agendamento(tmp_path):
@@ -136,6 +256,87 @@ def test_telefone_invalido_repetido_antes_da_confirmacao(tmp_path):
 
     assert "Telefone inválido" in resposta
     assert flow.state.etapa == "telefone"
+
+
+def test_humano_funciona_no_menu_inicial_e_registra_na_sessao(tmp_path):
+    engine = ConversationEngine(agenda_repository=JsonAgendaRepository(tmp_path / "agenda.json"))
+
+    engine.start("cliente_1")
+    resposta = engine.process_message("cliente_1", "humano")
+    state = engine.session_store.get_or_create("cliente_1")
+
+    assert "chamar" in resposta.lower() or "encaminhar" in resposta.lower()
+    assert engine.is_finished("cliente_1") is True
+    assert state.humano_solicitado is True
+    assert state.etapa_antes_humano == "escolha_inicial"
+
+
+def test_humano_funciona_na_etapa_de_escolher_data(tmp_path):
+    flow = AtendimentoFlow(JsonAgendaRepository(tmp_path / "agenda.json"), hoje=date(2026, 6, 16))
+
+    flow.iniciar()
+    flow.receber("agendar")
+    resposta = flow.receber("quero falar com alguém")
+
+    assert_humano_solicitado(flow, resposta, "dia")
+
+
+def test_humano_funciona_na_etapa_de_escolher_horario(tmp_path):
+    flow = AtendimentoFlow(JsonAgendaRepository(tmp_path / "agenda.json"), hoje=date(2026, 6, 16))
+
+    flow.iniciar()
+    flow.receber("agendar")
+    flow.receber("amanhã")
+    flow.receber("corte")
+    flow.receber("não")
+    flow.receber("manhã")
+    resposta = flow.receber("suporte")
+
+    assert_humano_solicitado(flow, resposta, "horario")
+
+
+def test_humano_funciona_na_etapa_de_informar_nome(tmp_path):
+    flow = AtendimentoFlow(JsonAgendaRepository(tmp_path / "agenda.json"), hoje=date(2026, 6, 16))
+
+    flow.iniciar()
+    flow.receber("agendar")
+    flow.receber("amanhã")
+    flow.receber("corte")
+    flow.receber("não")
+    flow.receber("manhã")
+    flow.receber("10")
+    resposta = flow.receber("pessoa")
+
+    assert_humano_solicitado(flow, resposta, "nome")
+
+
+def test_humano_funciona_na_etapa_de_cancelamento(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar_agendamentos([agendamento_base()])
+    flow = AtendimentoFlow(repository, hoje=date(2026, 6, 18))
+
+    flow.iniciar()
+    flow.receber("cancelar")
+    flow.receber("14999999999")
+    resposta = flow.receber("me chama alguém")
+
+    assert_humano_solicitado(flow, resposta, "cancelamento_escolha")
+    assert repository.listar_agendamentos()[0]["status"] == "agendado"
+
+
+def test_humano_funciona_na_etapa_de_remarcacao(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar_agendamentos([agendamento_base()])
+    flow = AtendimentoFlow(repository, hoje=date(2026, 6, 18))
+
+    flow.iniciar()
+    flow.receber("remarcar")
+    flow.receber("14999999999")
+    flow.receber("1")
+    resposta = flow.receber("atendente")
+
+    assert_humano_solicitado(flow, resposta, "remarcacao_dia")
+    assert repository.listar_agendamentos()[0]["data"] == "2026-06-18"
 
 
 def test_carregamento_valido_do_config_principal():
@@ -501,6 +702,94 @@ def test_repositorio_atualiza_agendamento_por_id(tmp_path):
     assert repository.listar_agendamentos()[0]["status"] == "cancelado"
 
 
+def test_factory_padrao_usa_sqlite_com_config(tmp_path):
+    repository = criar_agenda_repository(
+        {"storage": {"type": "sqlite", "path": str(tmp_path / "agenda.db")}}
+    )
+
+    assert isinstance(repository, SQLiteAgendaRepository)
+    assert repository.caminho == (tmp_path / "agenda.db").resolve()
+
+
+def test_sqlite_repository_salva_agendamento_e_vincula_telefone(tmp_path):
+    repository = SQLiteAgendaRepository(tmp_path / "agenda.db")
+    repository.adicionar_agendamento(agendamento_base(telefone="+55 (14) 99999-9999"))
+
+    agenda = repository.listar_agendamentos()
+    encontrados = repository.buscar_agendamentos_por_telefone("whatsapp:+5514999999999")
+
+    assert agenda[0]["telefone_normalizado"] == "5514999999999"
+    assert agenda[0]["cliente_id"] == "5514999999999"
+    assert [item["id"] for item in encontrados] == ["agenda-1"]
+
+
+def test_sqlite_session_store_separa_sessoes_e_persiste(tmp_path):
+    db_path = tmp_path / "agenda.db"
+    store = SQLiteSessionStore(db_path)
+    store.save("+55 (14) 99999-9999", ConversationState(etapa="dia", nome="Ana"))
+    store.save("+55 (14) 88888-8888", ConversationState(etapa="consulta_telefone", nome="Bia"))
+
+    reaberto = SQLiteSessionStore(db_path)
+
+    assert reaberto.get_or_create("whatsapp:+5514999999999").etapa == "dia"
+    assert reaberto.get_or_create("5514888888888").etapa == "consulta_telefone"
+
+
+def test_sqlite_cancelamento_e_remarcacao_buscam_por_telefone(tmp_path):
+    repository = SQLiteAgendaRepository(tmp_path / "agenda.db")
+    repository.salvar_agendamentos([agendamento_base(telefone="+55 (14) 99999-9999")])
+
+    cancelamento = AtendimentoFlow(repository, hoje=date(2026, 6, 18))
+    cancelamento.iniciar()
+    cancelamento.receber("cancelar")
+    assert "ativos" in cancelamento.receber("whatsapp:+5514999999999")
+    cancelamento.receber("1")
+    resposta_cancelamento = cancelamento.receber("sim")
+
+    assert "cancelado" in resposta_cancelamento.lower()
+    assert repository.buscar_agendamento_por_id("agenda-1")["status"] == "cancelado"
+
+    repository.salvar_agendamentos([agendamento_base(id="agenda-2", telefone="+55 (14) 99999-9999")])
+    remarcacao = AtendimentoFlow(repository, hoje=date(2026, 6, 18))
+    remarcacao.iniciar()
+    remarcacao.receber("remarcar")
+    assert "ativos" in remarcacao.receber("14999999999")
+    remarcacao.receber("1")
+    remarcacao.receber("19/06/2026")
+    remarcacao.receber("tarde")
+    remarcacao.receber("14:30")
+    resposta_remarcacao = remarcacao.receber("sim")
+
+    atualizado = repository.buscar_agendamento_por_id("agenda-2")
+    assert "remarcado" in resposta_remarcacao.lower()
+    assert atualizado["data"] == "2026-06-19"
+    assert atualizado["horario"] == "14:30"
+    assert atualizado["telefone_normalizado"] == "5514999999999"
+
+
+def test_migracao_json_para_sqlite_nao_duplica_dados(tmp_path):
+    json_path = tmp_path / "agenda.json"
+    db_path = tmp_path / "agenda.db"
+    json_path.write_text(
+        json.dumps(
+            [
+                agendamento_base(id="json-1"),
+                agendamento_base(id="json-2", horario="16:00"),
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    primeiro_resumo = migrar_json_para_sqlite(json_path, db_path)
+    segundo_resumo = migrar_json_para_sqlite(json_path, db_path)
+    repository = SQLiteAgendaRepository(db_path)
+
+    assert primeiro_resumo["novos"] == 2
+    assert segundo_resumo["novos"] == 0
+    assert [item["id"] for item in repository.listar_agendamentos()] == ["json-1", "json-2"]
+
+
 def test_clinica_troca_texto_de_profissional_para_medico(tmp_path):
     config = carregar_config(PROJECT_ROOT / "exemplos" / "clinica.json")
     flow = AtendimentoFlow(JsonAgendaRepository(tmp_path / "agenda.json"), hoje=date(2026, 6, 17), config=config)
@@ -733,6 +1022,12 @@ def test_telefone_normalizado_remove_mascara():
     assert normalizar_telefone("14 99999 9999") == "14999999999"
 
 
+def test_telefone_whatsapp_normalizado_para_client_id():
+    assert normalizar_telefone_whatsapp("+55 (14) 99999-9999") == "5514999999999"
+    assert normalizar_telefone_whatsapp("whatsapp:+5514999999999") == "5514999999999"
+    assert normalizar_telefone_whatsapp("14999999999") == "5514999999999"
+
+
 def test_telefone_invalido_deve_ser_rejeitado():
     assert validar_telefone("123") is None
     assert validar_telefone("(14) 9999-9999") == "1499999999"
@@ -759,6 +1054,38 @@ def test_engine_mantem_estado_por_session_id(tmp_path):
     assert "telefone" in resposta_2
     assert engine.session_store.get_or_create("cliente_1").etapa == "dia"
     assert engine.session_store.get_or_create("cliente_2").etapa == "consulta_telefone"
+
+
+def test_engine_padrao_usa_sqlite_e_persiste_sessao(tmp_path):
+    config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
+    config["storage"] = {"type": "sqlite", "path": str(tmp_path / "agenda.db")}
+
+    engine = ConversationEngine(config=config)
+    engine.start("+55 (14) 99999-9999")
+    engine.process_message("+55 (14) 99999-9999", "agendar")
+
+    reaberta = ConversationEngine(config=config)
+
+    assert isinstance(engine.agenda_repository, SQLiteAgendaRepository)
+    assert reaberta.session_store.get_or_create("whatsapp:+5514999999999").etapa == "dia"
+
+
+def test_engine_boas_vindas_persistem_no_sqlite_apos_recriar_engine(tmp_path):
+    db_path = tmp_path / "agenda.db"
+    repository = SQLiteAgendaRepository(db_path)
+    engine = ConversationEngine(agenda_repository=repository, hoje=date(2026, 6, 18))
+    sender_id = "whatsapp:+5514999999999"
+
+    primeira = engine.process_message(sender_id, "agendar")
+    estado_salvo = engine.session_store.get_or_create(sender_id)
+    reaberta = ConversationEngine(agenda_repository=SQLiteAgendaRepository(db_path), hoje=date(2026, 6, 18))
+    segunda = reaberta.process_message(sender_id, "amanha")
+    estado_reaberto = reaberta.session_store.get_or_create(sender_id)
+
+    assert "Seja bem-vindo" in primeira
+    assert estado_salvo.boas_vindas_enviada is True
+    assert "Seja bem-vindo" not in segunda
+    assert estado_reaberto.boas_vindas_enviada is True
 
 
 def test_engine_duas_sessoes_nao_misturam_dados(tmp_path):
@@ -791,6 +1118,29 @@ def test_engine_processa_fluxo_de_agendamento_sem_input_print(tmp_path):
     assert repository.listar_agendamentos()[0]["telefone"] == "14999999999"
 
 
+def test_engine_agendamento_whatsapp_usa_sender_id_como_telefone(tmp_path):
+    repository = SQLiteAgendaRepository(tmp_path / "agenda.db")
+    engine = ConversationEngine(agenda_repository=repository, hoje=date(2026, 6, 18))
+    sender_id = "whatsapp:+5514999999999"
+
+    engine.start(sender_id)
+    mensagens = ["agendar", "amanhã", "corte", "não", "manha", "10:00", "Marcos Eduardo"]
+    respostas = [engine.process_message(sender_id, mensagem) for mensagem in mensagens]
+
+    assert "Me informe seu telefone" not in respostas[-1]
+    assert engine.session_store.get_or_create(sender_id).etapa == "confirmacao"
+    assert "Telefone: 5514999999999" in respostas[-1]
+
+    resposta_final = engine.process_message(sender_id, "sim")
+    agenda = repository.listar_agendamentos()
+
+    assert "Agendamento confirmado" in resposta_final
+    assert len(agenda) == 1
+    assert agenda[0]["cliente_id"] == "5514999999999"
+    assert agenda[0]["telefone"] == "5514999999999"
+    assert agenda[0]["telefone_normalizado"] == "5514999999999"
+
+
 def test_engine_processa_consulta_por_telefone(tmp_path):
     repository = JsonAgendaRepository(tmp_path / "agenda.json")
     repository.salvar_agendamentos([agendamento_base()])
@@ -800,6 +1150,19 @@ def test_engine_processa_consulta_por_telefone(tmp_path):
     assert "telefone" in engine.process_message("cliente_1", "consultar")
     resposta = engine.process_message("cliente_1", "(14) 99999-9999")
 
+    assert "Corte com Marcos em 18/06/2026 às 15:00" in resposta
+
+
+def test_engine_consulta_whatsapp_usa_sender_id_sem_pedir_telefone(tmp_path):
+    repository = SQLiteAgendaRepository(tmp_path / "agenda.db")
+    repository.salvar_agendamentos([agendamento_base(telefone="+55 (14) 99999-9999")])
+    engine = ConversationEngine(agenda_repository=repository, hoje=date(2026, 6, 18))
+    sender_id = "whatsapp:+5514999999999"
+
+    engine.start(sender_id)
+    resposta = engine.process_message(sender_id, "consultar")
+
+    assert "Digite o telefone" not in resposta
     assert "Corte com Marcos em 18/06/2026 às 15:00" in resposta
 
 
@@ -818,6 +1181,23 @@ def test_engine_processa_cancelamento_por_telefone(tmp_path):
     assert repository.listar_agendamentos()[0]["status"] == "cancelado"
 
 
+def test_engine_cancelamento_whatsapp_usa_sender_id_sem_pedir_telefone(tmp_path):
+    repository = SQLiteAgendaRepository(tmp_path / "agenda.db")
+    repository.salvar_agendamentos([agendamento_base(telefone="+55 (14) 99999-9999")])
+    engine = ConversationEngine(agenda_repository=repository, hoje=date(2026, 6, 18))
+    sender_id = "whatsapp:+5514999999999"
+
+    engine.start(sender_id)
+    resposta_lista = engine.process_message(sender_id, "cancelar")
+    engine.process_message(sender_id, "1")
+    resposta = engine.process_message(sender_id, "sim")
+
+    assert "Digite o telefone" not in resposta_lista
+    assert "ativos" in resposta_lista
+    assert "cancelado" in resposta.lower()
+    assert repository.buscar_agendamento_por_id("agenda-1")["status"] == "cancelado"
+
+
 def test_engine_processa_remarcacao_por_telefone(tmp_path):
     repository = JsonAgendaRepository(tmp_path / "agenda.json")
     repository.salvar_agendamentos([agendamento_base()])
@@ -834,6 +1214,29 @@ def test_engine_processa_remarcacao_por_telefone(tmp_path):
 
     agendamento = repository.listar_agendamentos()[0]
     assert "remarcado" in resposta.lower()
+    assert agendamento["data"] == "2026-06-19"
+    assert agendamento["horario"] == "14:30"
+
+
+def test_engine_remarcacao_whatsapp_usa_sender_id_sem_pedir_telefone(tmp_path):
+    repository = SQLiteAgendaRepository(tmp_path / "agenda.db")
+    repository.salvar_agendamentos([agendamento_base(telefone="+55 (14) 99999-9999")])
+    engine = ConversationEngine(agenda_repository=repository, hoje=date(2026, 6, 18))
+    sender_id = "whatsapp:+5514999999999"
+
+    engine.start(sender_id)
+    resposta_lista = engine.process_message(sender_id, "remarcar")
+    engine.process_message(sender_id, "1")
+    engine.process_message(sender_id, "19/06/2026")
+    engine.process_message(sender_id, "tarde")
+    engine.process_message(sender_id, "14:30")
+    resposta = engine.process_message(sender_id, "sim")
+
+    agendamento = repository.buscar_agendamento_por_id("agenda-1")
+    assert "Digite o telefone" not in resposta_lista
+    assert "ativos" in resposta_lista
+    assert "remarcado" in resposta.lower()
+    assert agendamento["telefone_normalizado"] == "5514999999999"
     assert agendamento["data"] == "2026-06-19"
     assert agendamento["horario"] == "14:30"
 
@@ -915,6 +1318,22 @@ def test_fake_whatsapp_channel_cria_mensagem_de_entrada():
     assert incoming.raw == {"phone": "14999999999", "text": "agendar"}
 
 
+def test_fake_whatsapp_channel_aceita_payload_com_from_ou_telefone():
+    channel = FakeWhatsAppChannel()
+
+    por_from = channel.build_incoming_from_payload(
+        {"from": "whatsapp:+5514999999999", "message": "quero agendar"}
+    )
+    por_telefone = channel.build_incoming_payload(
+        {"telefone": "+55 (14) 99999-9999", "mensagem": "cancelar"}
+    )
+
+    assert por_from.sender_id == "5514999999999"
+    assert por_from.text == "quero agendar"
+    assert por_telefone.sender_id == "5514999999999"
+    assert por_telefone.text == "cancelar"
+
+
 def test_fake_whatsapp_channel_armazena_mensagem_enviada():
     channel = FakeWhatsAppChannel()
     outgoing = OutgoingMessage(
@@ -961,9 +1380,386 @@ def test_fake_whatsapp_duas_sessoes_nao_misturam_estado(tmp_path):
     resposta_2 = engine.process_message(mensagem_2.sender_id, mensagem_2.text)
 
     assert "Qual dia" in resposta_1
-    assert "telefone" in resposta_2
+    assert "Não encontrei agendamentos ativos" in resposta_2
     assert engine.session_store.get_or_create("14999999999").etapa == "dia"
-    assert engine.session_store.get_or_create("14888888888").etapa == "consulta_telefone"
+    assert engine.session_store.get_or_create("14888888888").etapa == "encerrado"
+
+
+def test_webhook_health_retorna_ok(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "service": "atendente-whatsapp",
+        "storage": "sqlite",
+    }
+
+
+def test_webhook_whatsapp_bloqueia_sem_webhook_api_key_configurada(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+
+    response = client.post(
+        "/webhook/whatsapp",
+        json={"from": "whatsapp:+5514999999999", "message": "agendar"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"ok": False, "error": "WEBHOOK_API_KEY nao configurada."}
+
+
+def test_webhook_whatsapp_bloqueia_webhook_api_key_vazia(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    monkeypatch.setenv("WEBHOOK_API_KEY", "   ")
+
+    response = client.post(
+        "/webhook/whatsapp",
+        headers={"X-API-Key": "   "},
+        json={"from": "whatsapp:+5514999999999", "message": "agendar"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"ok": False, "error": "WEBHOOK_API_KEY nao configurada."}
+
+
+def test_webhook_whatsapp_rejeita_sem_header_quando_api_key_configurada(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    monkeypatch.setenv("WEBHOOK_API_KEY", "segredo")
+
+    response = client.post(
+        "/webhook/whatsapp",
+        json={"from": "whatsapp:+5514999999999", "message": "agendar"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"ok": False, "error": "unauthorized"}
+
+
+def test_webhook_whatsapp_rejeita_api_key_errada(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    monkeypatch.setenv("WEBHOOK_API_KEY", "segredo")
+
+    response = client.post(
+        "/webhook/whatsapp",
+        headers={"X-API-Key": "errada"},
+        json={"from": "whatsapp:+5514999999999", "message": "agendar"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"ok": False, "error": "unauthorized"}
+
+
+def test_webhook_whatsapp_aceita_api_key_correta(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    monkeypatch.setenv("WEBHOOK_API_KEY", "segredo")
+
+    response = client.post(
+        "/webhook/whatsapp",
+        headers={"X-API-Key": "segredo"},
+        json={"from": "whatsapp:+5514999999999", "message": "agendar"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
+def test_webhook_whatsapp_aceita_from_e_message(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    headers = webhook_auth_headers(monkeypatch)
+
+    response = client.post(
+        "/webhook/whatsapp",
+        headers=headers,
+        json={"from": "whatsapp:+5514999999999", "message": "agendar"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["to"] == "5514999999999"
+    assert "Qual dia" in body["reply"]
+    assert body["human_requested"] is False
+
+
+def test_webhook_whatsapp_aceita_telefone_e_mensagem(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    headers = webhook_auth_headers(monkeypatch)
+
+    response = client.post(
+        "/webhook/whatsapp",
+        headers=headers,
+        json={"telefone": "+55 (14) 99999-9999", "mensagem": "agendar"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["to"] == "5514999999999"
+    assert "Qual dia" in body["reply"]
+
+
+def test_webhook_whatsapp_primeiro_contato_recebe_boas_vindas(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    headers = webhook_auth_headers(monkeypatch)
+
+    response = client.post(
+        "/webhook/whatsapp",
+        headers=headers,
+        json={"from": "whatsapp:+5514999999999", "message": "agendar"},
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert "Seja bem-vindo" in body["reply"]
+    assert "Qual dia" in body["reply"]
+
+
+def test_webhook_whatsapp_segunda_mensagem_nao_repete_boas_vindas(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    headers = webhook_auth_headers(monkeypatch)
+
+    client.post(
+        "/webhook/whatsapp",
+        headers=headers,
+        json={"from": "whatsapp:+5514999999999", "message": "agendar"},
+    )
+    response = client.post(
+        "/webhook/whatsapp",
+        headers=headers,
+        json={"from": "whatsapp:+5514999999999", "message": "amanha"},
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert "Seja bem-vindo" not in body["reply"]
+    assert webhook_app.state.engine.session_store.get_or_create("5514999999999").boas_vindas_enviada is True
+
+
+def test_webhook_whatsapp_dois_numeros_recebem_boas_vindas_separadas(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    headers = webhook_auth_headers(monkeypatch)
+
+    primeira = client.post(
+        "/webhook/whatsapp",
+        headers=headers,
+        json={"from": "whatsapp:+5514999999999", "message": "agendar"},
+    )
+    segunda = client.post(
+        "/webhook/whatsapp",
+        headers=headers,
+        json={"from": "whatsapp:+5514888888888", "message": "agendar"},
+    )
+
+    assert "Seja bem-vindo" in primeira.json()["reply"]
+    assert "Seja bem-vindo" in segunda.json()["reply"]
+
+
+def test_webhook_whatsapp_duas_sessoes_nao_misturam_estado(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    headers = webhook_auth_headers(monkeypatch)
+
+    primeira = client.post(
+        "/webhook/whatsapp",
+        headers=headers,
+        json={"from": "whatsapp:+5514999999999", "message": "agendar"},
+    )
+    segunda = client.post(
+        "/webhook/whatsapp",
+        headers=headers,
+        json={"from": "whatsapp:+5514888888888", "message": "agendar"},
+    )
+    client.post(
+        "/webhook/whatsapp",
+        headers=headers,
+        json={"from": "whatsapp:+5514999999999", "message": "amanhã"},
+    )
+
+    engine = webhook_app.state.engine
+    estado_1 = engine.session_store.get_or_create("5514999999999")
+    estado_2 = engine.session_store.get_or_create("5514888888888")
+
+    assert primeira.json()["to"] == "5514999999999"
+    assert segunda.json()["to"] == "5514888888888"
+    assert estado_1.etapa == "servico"
+    assert estado_2.etapa == "dia"
+
+
+def test_webhook_whatsapp_agendamento_salva_no_sqlite(tmp_path, monkeypatch):
+    client, repository = webhook_client(tmp_path, hoje=date(2026, 6, 18), monkeypatch=monkeypatch)
+    headers = webhook_auth_headers(monkeypatch)
+    payloads = [
+        {"from": "whatsapp:+5514999999999", "message": "agendar"},
+        {"from": "whatsapp:+5514999999999", "message": "amanhã"},
+        {"from": "whatsapp:+5514999999999", "message": "corte"},
+        {"from": "whatsapp:+5514999999999", "message": "não"},
+        {"from": "whatsapp:+5514999999999", "message": "manha"},
+        {"from": "whatsapp:+5514999999999", "message": "10:00"},
+        {"from": "whatsapp:+5514999999999", "message": "Eduardo Cliente"},
+        {"from": "whatsapp:+5514999999999", "message": "sim"},
+    ]
+
+    responses = [client.post("/webhook/whatsapp", headers=headers, json=payload) for payload in payloads]
+    agenda = repository.listar_agendamentos()
+
+    assert responses[-1].status_code == 200
+    assert "Agendamento confirmado" in responses[-1].json()["reply"]
+    assert len(agenda) == 1
+    assert agenda[0]["nome"] == "Eduardo Cliente"
+    assert agenda[0]["telefone"] == "5514999999999"
+    assert agenda[0]["telefone_normalizado"] == "5514999999999"
+    assert agenda[0]["cliente_id"] == "5514999999999"
+    assert agenda[0]["data"] == "2026-06-19"
+    assert agenda[0]["horario"] == "10:00"
+
+
+def test_webhook_whatsapp_pedido_humano_retorna_flag(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    headers = webhook_auth_headers(monkeypatch)
+
+    response = client.post(
+        "/webhook/whatsapp",
+        headers=headers,
+        json={"from": "whatsapp:+5514999999999", "message": "humano"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["to"] == "5514999999999"
+    assert body["human_requested"] is True
+    assert "chamar" in body["reply"].lower() or "encaminhar" in body["reply"].lower()
+
+
+def test_webhook_whatsapp_sem_telefone_retorna_erro_claro(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    headers = webhook_auth_headers(monkeypatch)
+
+    response = client.post("/webhook/whatsapp", headers=headers, json={"message": "agendar"})
+
+    assert response.status_code == 400
+    assert response.json() == {"ok": False, "error": "Payload sem telefone de origem."}
+
+
+def test_webhook_whatsapp_sem_mensagem_retorna_erro_claro(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    headers = webhook_auth_headers(monkeypatch)
+
+    response = client.post(
+        "/webhook/whatsapp",
+        headers=headers,
+        json={"from": "whatsapp:+5514999999999"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"ok": False, "error": "Payload sem mensagem."}
+
+
+def test_webhook_meta_verify_token_correto_retorna_challenge(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    monkeypatch.setenv("META_WHATSAPP_VERIFY_TOKEN", "verify-local")
+
+    response = client.get(
+        "/webhook/meta",
+        params={
+            "hub.mode": "subscribe",
+            "hub.verify_token": "verify-local",
+            "hub.challenge": "challenge-123",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.text == "challenge-123"
+
+
+def test_webhook_meta_verify_token_errado_retorna_403(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    monkeypatch.setenv("META_WHATSAPP_VERIFY_TOKEN", "verify-local")
+
+    response = client.get(
+        "/webhook/meta",
+        params={
+            "hub.mode": "subscribe",
+            "hub.verify_token": "errado",
+            "hub.challenge": "challenge-123",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"ok": False, "error": "Meta webhook verification failed."}
+
+
+def test_webhook_meta_mensagem_texto_processa_conversa(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    fake_meta = FakeMetaWhatsAppClient()
+    webhook_app.state.meta_client = fake_meta
+
+    response = client.post("/webhook/meta", json=meta_text_payload("agendar"))
+
+    assert response.status_code == 200
+    assert response.json()["processed"] == 1
+    assert webhook_app.state.engine.session_store.get_or_create("5514999999999").etapa == "dia"
+
+
+def test_webhook_meta_ignora_status_sem_mensagem(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    fake_meta = FakeMetaWhatsAppClient()
+    webhook_app.state.meta_client = fake_meta
+
+    response = client.post("/webhook/meta", json=meta_status_payload())
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "processed": 0, "ignored": True}
+    assert fake_meta.calls == []
+
+
+def test_webhook_meta_chama_client_com_telefone_e_resposta(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    fake_meta = FakeMetaWhatsAppClient()
+    webhook_app.state.meta_client = fake_meta
+
+    response = client.post("/webhook/meta", json=meta_text_payload("agendar"))
+
+    assert response.status_code == 200
+    assert response.json()["sent"] == 1
+    assert fake_meta.calls[0]["to"] == "5514999999999"
+    assert "Seja bem-vindo" in fake_meta.calls[0]["text"]
+    assert "Qual dia" in fake_meta.calls[0]["text"]
+
+
+def test_webhook_meta_nao_processa_mensagem_duplicada(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+    fake_meta = FakeMetaWhatsAppClient()
+    webhook_app.state.meta_client = fake_meta
+    payload = meta_text_payload("agendar", message_id="wamid.duplicado")
+
+    primeira = client.post("/webhook/meta", json=payload)
+    segunda = client.post("/webhook/meta", json=payload)
+
+    assert primeira.status_code == 200
+    assert primeira.json()["processed"] == 1
+    assert segunda.status_code == 200
+    assert segunda.json()["processed"] == 0
+    assert segunda.json()["duplicated"] == 1
+    assert len(fake_meta.calls) == 1
+
+
+def test_webhook_meta_sem_variaveis_retorna_erro_claro_sem_quebrar(tmp_path, monkeypatch):
+    client, _repository = webhook_client(tmp_path, monkeypatch=monkeypatch)
+
+    response = client.post("/webhook/meta", json=meta_text_payload("agendar"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["processed"] == 1
+    assert body["send_errors"][0]["ok"] is False
+    assert body["send_errors"][0]["error"] == "Configuracao da Meta incompleta."
+    assert set(body["send_errors"][0]["missing"]) == {
+        "META_WHATSAPP_TOKEN",
+        "META_WHATSAPP_PHONE_NUMBER_ID",
+    }
 
 
 def test_terminal_continua_usando_mesma_engine_via_canal():
@@ -1066,6 +1862,55 @@ def test_admin_solicitacoes_loja_sao_listadas(tmp_path):
 
     assert solicitacoes[0]["nome"] == "Eduardo"
     assert solicitacoes[0]["descricao"] == "Quero um orçamento"
+
+
+def test_admin_solicitacoes_humano_sao_lidas_das_sessoes_sqlite(tmp_path):
+    repository = SQLiteAgendaRepository(tmp_path / "agenda.db")
+    store = SQLiteSessionStore(tmp_path / "agenda.db")
+    store.save(
+        "whatsapp:+5514999999999",
+        ConversationState(
+            etapa="encerrado",
+            nome="Eduardo",
+            telefone="5514999999999",
+            humano_solicitado=True,
+            etapa_antes_humano="horario",
+        ),
+        finished=True,
+    )
+
+    solicitacoes = reports.listar_solicitacoes_humano(repository)
+
+    assert len(solicitacoes) == 1
+    assert solicitacoes[0]["tipo"] == "humano"
+    assert solicitacoes[0]["nome"] == "Eduardo"
+    assert solicitacoes[0]["telefone"] == "5514999999999"
+    assert solicitacoes[0]["whatsapp"] == "whatsapp:+5514999999999"
+    assert solicitacoes[0]["etapa_origem"] == "horario"
+    assert solicitacoes[0]["status"] == "pendente"
+
+
+def test_admin_solicitacoes_atendimento_combina_humano_e_loja(tmp_path):
+    agenda_repository = SQLiteAgendaRepository(tmp_path / "agenda.db")
+    store = SQLiteSessionStore(tmp_path / "agenda.db")
+    store.save(
+        "whatsapp:+5514999999999",
+        ConversationState(
+            etapa="encerrado",
+            telefone="5514999999999",
+            humano_solicitado=True,
+            etapa_antes_humano="dia",
+        ),
+        finished=True,
+    )
+    solicitacoes_repository = JsonAgendaRepository(tmp_path / "solicitacoes.json")
+    solicitacoes_repository.salvar(
+        [{"nome": "Cliente Loja", "telefone": "14999999999", "descricao": "Quero orçamento"}]
+    )
+
+    solicitacoes = reports.listar_solicitacoes_atendimento(agenda_repository, solicitacoes_repository)
+
+    assert [item["tipo"] for item in solicitacoes] == ["humano", "loja"]
 
 
 def test_admin_resumo_do_dia_conta_servicos_corretamente(tmp_path):
@@ -1288,6 +2133,28 @@ def test_limpar_dados_zera_agenda_e_solicitacoes(tmp_path):
     assert json.loads(solicitacoes_path.read_text(encoding="utf-8")) == []
 
 
+def test_limpar_dados_sqlite_remove_sessoes_com_pedido_humano(tmp_path):
+    db_path = tmp_path / "agenda.db"
+    repository = SQLiteAgendaRepository(db_path)
+    repository.salvar_agendamentos([agendamento_base()])
+    store = SQLiteSessionStore(db_path)
+    store.save(
+        "whatsapp:+5514999999999",
+        ConversationState(
+            etapa="encerrado",
+            telefone="5514999999999",
+            humano_solicitado=True,
+            etapa_antes_humano="horario",
+        ),
+        finished=True,
+    )
+
+    limpar_dados(agenda_path=db_path, solicitacoes_path=tmp_path / "solicitacoes.json")
+
+    assert repository.listar_agendamentos() == []
+    assert reports.listar_solicitacoes_humano(repository) == []
+
+
 def test_relatorios_continuam_ignorando_cancelados_na_agenda_ativa(tmp_path):
     repository = JsonAgendaRepository(tmp_path / "agenda.json")
     repository.salvar(
@@ -1321,24 +2188,101 @@ def test_painel_tem_fallback_para_formatar_contagem_tabela(monkeypatch):
     ]
 
 
-def test_painel_main_renderiza_com_streamlit_falso_sem_argumentos_incompativeis(tmp_path, monkeypatch):
+def test_admin_auth_login_correto_retorna_verdadeiro():
+    from app.admin_auth import AdminCredentials, check_login
+
+    credentials = AdminCredentials(username="admin", password="senha-forte", configured=True)
+
+    assert check_login("admin", "senha-forte", credentials) is True
+
+
+def test_admin_auth_senha_errada_retorna_falso():
+    from app.admin_auth import AdminCredentials, check_login
+
+    credentials = AdminCredentials(username="admin", password="senha-forte", configured=True)
+
+    assert check_login("admin", "errada", credentials) is False
+
+
+def test_admin_auth_usuario_errado_retorna_falso():
+    from app.admin_auth import AdminCredentials, check_login
+
+    credentials = AdminCredentials(username="admin", password="senha-forte", configured=True)
+
+    assert check_login("outro", "senha-forte", credentials) is False
+
+
+def test_admin_auth_nao_aceita_admin_admin_quando_env_nao_existe(monkeypatch):
+    from app.admin_auth import check_login, get_admin_credentials
+
+    monkeypatch.delenv("ADMIN_USERNAME", raising=False)
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+
+    credentials = get_admin_credentials()
+
+    assert credentials.configured is False
+    assert check_login("admin", "admin", credentials) is False
+
+
+def test_admin_auth_env_incompleto_bloqueia_login(monkeypatch):
+    from app.admin_auth import check_login, get_admin_credentials
+
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+
+    credentials = get_admin_credentials()
+
+    assert credentials.configured is False
+    assert check_login("admin", "admin", credentials) is False
+
+
+def test_admin_auth_env_real_habilita_login(monkeypatch):
+    from app.admin_auth import check_login, get_admin_credentials
+
+    monkeypatch.setenv("ADMIN_USERNAME", "dono")
+    monkeypatch.setenv("ADMIN_PASSWORD", "senha-forte")
+
+    credentials = get_admin_credentials()
+
+    assert credentials.configured is True
+    assert check_login("dono", "senha-forte", credentials) is True
+    assert check_login("admin", "admin", credentials) is False
+
+
+def test_painel_sem_login_nao_carrega_dados_sensiveis(monkeypatch):
     import app.admin_dashboard as admin_dashboard
 
     fake_st = FakeStreamlit()
+
+    def falhar_se_carregar_config():
+        raise AssertionError("Painel nao deve carregar dados antes do login")
+
+    monkeypatch.setattr(admin_dashboard, "st", fake_st)
+    monkeypatch.setattr(admin_dashboard, "carregar_config", falhar_se_carregar_config)
+
+    admin_dashboard.main()
+
+    assert fake_st.dataframes == []
+
+
+def test_painel_main_renderiza_com_streamlit_falso_sem_argumentos_incompativeis(tmp_path, monkeypatch):
+    import app.admin_dashboard as admin_dashboard
+    from app.admin_auth import SESSION_AUTH_KEY
+
+    fake_st = FakeStreamlit()
+    fake_st.session_state[SESSION_AUTH_KEY] = True
+    monkeypatch.setenv("ADMIN_USERNAME", "dono")
+    monkeypatch.setenv("ADMIN_PASSWORD", "senha-forte")
     agenda_repository = JsonAgendaRepository(tmp_path / "agenda.json")
     solicitacoes_repository = JsonAgendaRepository(tmp_path / "solicitacoes.json")
     agenda_repository.salvar([agendamento_base(data=date.today().isoformat())])
     solicitacoes_repository.salvar([])
     config = carregar_config(PROJECT_ROOT / "exemplos" / "barbearia.json")
 
-    def repository_factory(caminho=None):
-        if caminho == reports.DEFAULT_SOLICITACOES_PATH:
-            return solicitacoes_repository
-        return agenda_repository
-
     monkeypatch.setattr(admin_dashboard, "st", fake_st)
     monkeypatch.setattr(admin_dashboard, "carregar_config", lambda: config)
-    monkeypatch.setattr(admin_dashboard, "JsonAgendaRepository", repository_factory)
+    monkeypatch.setattr(admin_dashboard, "criar_agenda_repository", lambda _config=None: agenda_repository)
+    monkeypatch.setattr(admin_dashboard, "JsonAgendaRepository", lambda _caminho=None: solicitacoes_repository)
 
     admin_dashboard.main()
 
@@ -1370,6 +2314,9 @@ class FakeSidebar:
     def checkbox(self, *args, **kwargs):
         return False
 
+    def button(self, *args, **kwargs):
+        return False
+
     def info(self, *args, **kwargs):
         pass
 
@@ -1387,6 +2334,7 @@ class FakeStreamlit:
     def __init__(self):
         self.sidebar = FakeSidebar()
         self.dataframes = []
+        self.session_state = {}
 
     def set_page_config(self, *args, **kwargs):
         pass
@@ -1395,6 +2343,21 @@ class FakeStreamlit:
         pass
 
     def caption(self, *args, **kwargs):
+        pass
+
+    def warning(self, *args, **kwargs):
+        pass
+
+    def error(self, *args, **kwargs):
+        pass
+
+    def text_input(self, *args, **kwargs):
+        return ""
+
+    def button(self, *args, **kwargs):
+        return False
+
+    def rerun(self):
         pass
 
     def tabs(self, nomes):

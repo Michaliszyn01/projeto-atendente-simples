@@ -13,6 +13,9 @@ class ConversationState:
     profissional: Optional[str] = None
     nome: Optional[str] = None
     telefone: Optional[str] = None
+    boas_vindas_enviada: bool = False
+    humano_solicitado: bool = False
+    etapa_antes_humano: Optional[str] = None
     categoria: Optional[str] = None
     descricao_orcamento: Optional[str] = None
     opcoes_horarios: list[dict[str, str]] = field(default_factory=list)

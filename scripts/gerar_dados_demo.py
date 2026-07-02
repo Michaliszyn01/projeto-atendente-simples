@@ -9,7 +9,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.config.config_loader import carregar_config
-from core.storage.json_repository import DEFAULT_AGENDA_PATH
+from core.storage.sqlite_repository import DEFAULT_DB_PATH, SQLiteAgendaRepository
 
 
 DEFAULT_SOLICITACOES_PATH = PROJECT_ROOT / "data" / "solicitacoes.json"
@@ -46,18 +46,17 @@ TELEFONES_FICTICIOS = [
 
 
 def gerar_dados_demo(
-    agenda_path: str | Path = DEFAULT_AGENDA_PATH,
+    agenda_path: str | Path | None = None,
     solicitacoes_path: str | Path = DEFAULT_SOLICITACOES_PATH,
     config: dict | None = None,
     hoje: date | None = None,
 ) -> tuple[list[dict], list[dict]]:
     config = config or carregar_config()
     hoje = hoje or date.today()
-    agenda_path = Path(agenda_path)
     solicitacoes_path = Path(solicitacoes_path)
 
     agenda = _substituir_dados_demo(
-        _carregar_json_lista(agenda_path),
+        _carregar_agenda(agenda_path),
         criar_agenda_demo(config, hoje),
         id_prefix=DEMO_AGENDA_PREFIX,
     )
@@ -67,7 +66,7 @@ def gerar_dados_demo(
         id_prefix=DEMO_SOLICITACAO_PREFIX,
     )
 
-    _salvar_json(agenda_path, agenda)
+    _salvar_agenda(agenda_path, agenda)
     _salvar_json(solicitacoes_path, solicitacoes)
     return agenda, solicitacoes
 
@@ -195,6 +194,17 @@ def _carregar_json_lista(caminho: Path) -> list[dict]:
     return [item for item in dados if isinstance(item, dict)]
 
 
+def _carregar_agenda(caminho: str | Path | None) -> list[dict]:
+    if caminho is None:
+        return SQLiteAgendaRepository(DEFAULT_DB_PATH).listar()
+
+    caminho_path = Path(caminho)
+    if caminho_path.suffix.lower() == ".json":
+        return _carregar_json_lista(caminho_path)
+
+    return SQLiteAgendaRepository(caminho_path).listar()
+
+
 def _substituir_dados_demo(dados_atuais: list[dict], dados_demo: list[dict], id_prefix: str) -> list[dict]:
     dados_preservados = [
         item
@@ -219,6 +229,19 @@ def _salvar_json(caminho: Path, dados: list[dict]) -> None:
         caminho = PROJECT_ROOT / caminho
     caminho.parent.mkdir(parents=True, exist_ok=True)
     caminho.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _salvar_agenda(caminho: str | Path | None, dados: list[dict]) -> None:
+    if caminho is None:
+        SQLiteAgendaRepository(DEFAULT_DB_PATH).salvar(dados)
+        return
+
+    caminho_path = Path(caminho)
+    if caminho_path.suffix.lower() == ".json":
+        _salvar_json(caminho_path, dados)
+        return
+
+    SQLiteAgendaRepository(caminho_path).salvar(dados)
 
 
 def main() -> None:

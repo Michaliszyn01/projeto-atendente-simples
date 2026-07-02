@@ -30,7 +30,16 @@ OPCOES_AGENDAR = {"agendar", "marcar", "marcar horario"}
 OPCOES_CONSULTAR = {"consultar", "ver agendamento", "meu horario", "qual meu horario"}
 OPCOES_CANCELAR_AGENDAMENTO = {"cancelar", "desmarcar", "cancelar horario"}
 OPCOES_REMARCAR = {"remarcar", "trocar horario", "mudar horario", "mudar agendamento"}
-OPCOES_HUMANO = {"alguem", "falar com alguem", "atendente", "humano"}
+OPCOES_HUMANO = {
+    "alguem",
+    "atendente",
+    "falar com alguem",
+    "humano",
+    "me chama alguem",
+    "pessoa",
+    "quero falar com alguem",
+    "suporte",
+}
 
 
 class AtendimentoFlow:
@@ -59,6 +68,9 @@ class AtendimentoFlow:
 
         etapa = self.state.etapa
         comando = normalizar_texto(mensagem)
+
+        if self._eh_opcao_humano(comando):
+            return self._acionar_humano(etapa)
 
         if comando == "sair":
             self.encerrado = True
@@ -119,23 +131,33 @@ class AtendimentoFlow:
         resposta = normalizar_texto(mensagem)
 
         if self._eh_opcao_humano(resposta):
-            self.encerrado = True
-            self.state.etapa = "encerrado"
-            return self.mensagem("humano")
+            return self._acionar_humano(self.state.etapa)
 
         if self.config.get("usa_agendamento") and self._eh_opcao_agendar(resposta):
             self.state.etapa = "dia"
             return self.mensagem("pergunta_dia")
 
         if self.config.get("usa_agendamento") and self._eh_opcao_consultar(resposta):
+            telefone = self._telefone_preenchido()
+            if telefone is not None:
+                self.state.etapa = "consulta_telefone"
+                return self._receber_consulta_telefone(telefone)
             self.state.etapa = "consulta_telefone"
             return self.mensagem("consulta_pede_telefone")
 
         if self.config.get("usa_agendamento") and self._eh_opcao_cancelar_agendamento(resposta):
+            telefone = self._telefone_preenchido()
+            if telefone is not None:
+                self.state.etapa = "cancelamento_telefone"
+                return self._receber_cancelamento_telefone(telefone)
             self.state.etapa = "cancelamento_telefone"
             return self.mensagem("cancelamento_pede_telefone")
 
         if self.config.get("usa_agendamento") and self._eh_opcao_remarcar(resposta):
+            telefone = self._telefone_preenchido()
+            if telefone is not None:
+                self.state.etapa = "remarcacao_telefone"
+                return self._receber_remarcacao_telefone(telefone)
             self.state.etapa = "remarcacao_telefone"
             return self.mensagem("remarcacao_pede_telefone")
 
@@ -446,6 +468,10 @@ class AtendimentoFlow:
             return f"Nome inválido. {self.mensagem('pergunta_nome')}"
 
         self.state.nome = nome
+        if self._telefone_preenchido() is not None:
+            self.state.etapa = "confirmacao"
+            return self._montar_confirmacao()
+
         self.state.etapa = "telefone"
         return self.mensagem("pergunta_telefone")
 
@@ -541,6 +567,21 @@ class AtendimentoFlow:
 
         self.state.telefone = telefone
         return agendamentos, None
+
+    def _telefone_preenchido(self) -> str | None:
+        telefone = validar_telefone(self.state.telefone or "")
+        if telefone is None:
+            return None
+
+        self.state.telefone = telefone
+        return telefone
+
+    def _acionar_humano(self, etapa_origem: str) -> str:
+        self.encerrado = True
+        self.state.humano_solicitado = True
+        self.state.etapa_antes_humano = etapa_origem
+        self.state.etapa = "encerrado"
+        return self.mensagem("humano") or "Certo, vou encaminhar seu atendimento para uma pessoa."
 
     def _selecionar_agendamento_da_lista(
         self,
@@ -712,7 +753,22 @@ class AtendimentoFlow:
         )
 
     def _eh_opcao_humano(self, resposta_normalizada: str) -> bool:
-        return resposta_normalizada in OPCOES_HUMANO or any(
+        if resposta_normalizada in OPCOES_HUMANO:
+            return True
+
+        if "falar com" in resposta_normalizada and any(
+            termo in resposta_normalizada
+            for termo in {"alguem", "atendente", "humano", "pessoa", "suporte"}
+        ):
+            return True
+
+        if "chama" in resposta_normalizada and any(
+            termo in resposta_normalizada
+            for termo in {"alguem", "atendente", "humano", "pessoa", "suporte"}
+        ):
+            return True
+
+        return any(
             "falar com" in normalizar_texto(item) and normalizar_texto(item) == resposta_normalizada
             for item in self.config.get("opcoes_inicio", [])
         )

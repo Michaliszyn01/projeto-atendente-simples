@@ -73,10 +73,12 @@ def formatar_solicitacoes(solicitacoes: list[dict]) -> list[dict[str, str]] | st
         return MENSAGEM_SEM_SOLICITACOES
     return [
         {
+            "tipo": solicitacao.get("tipo", ""),
             "nome": solicitacao.get("nome", ""),
-            "telefone": solicitacao.get("telefone", ""),
+            "telefone/whatsapp": solicitacao.get("whatsapp") or solicitacao.get("telefone", ""),
             "categoria": solicitacao.get("categoria", ""),
             "descrição/pedido": solicitacao.get("descricao") or solicitacao.get("pedido", ""),
+            "etapa_origem": solicitacao.get("etapa_origem", ""),
             "criado_em": solicitacao.get("criado_em", ""),
             "status": solicitacao.get("status", ""),
         }
@@ -89,10 +91,12 @@ def formatar_tabela_solicitacoes(solicitacoes: list[dict]) -> list[dict[str, str
         return MENSAGEM_SEM_SOLICITACOES
     return [
         {
+            "Tipo": solicitacao.get("tipo", ""),
             "Nome": solicitacao.get("nome", ""),
-            "Telefone": solicitacao.get("telefone", ""),
+            "Telefone/WhatsApp": solicitacao.get("whatsapp") or solicitacao.get("telefone", ""),
             "Categoria": solicitacao.get("categoria", ""),
             "Descrição/Pedido": solicitacao.get("descricao") or solicitacao.get("pedido", ""),
+            "Etapa origem": solicitacao.get("etapa_origem", ""),
             "Criado em": solicitacao.get("criado_em", ""),
             "Status": solicitacao.get("status", ""),
         }

@@ -154,6 +154,24 @@ def normalizar_telefone(texto: str) -> str:
     return re.sub(r"\D", "", texto)
 
 
+def normalizar_telefone_whatsapp(valor: str) -> str:
+    texto = str(valor or "").strip()
+    if texto.lower().startswith("whatsapp:"):
+        texto = texto.split(":", 1)[1]
+
+    digitos = re.sub(r"\D", "", texto)
+    if digitos.startswith("00"):
+        digitos = digitos[2:]
+
+    if len(digitos) in {10, 11}:
+        digitos = f"55{digitos}"
+
+    if len(digitos) < 12 or len(digitos) > 15:
+        raise ValueError("Telefone de WhatsApp inválido.")
+
+    return digitos
+
+
 def validar_telefone(texto: str) -> str | None:
     telefone = normalizar_telefone(texto)
     if len(telefone) < 8:

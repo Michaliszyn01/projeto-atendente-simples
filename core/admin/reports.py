@@ -5,6 +5,7 @@ from typing import Any
 from core.config.config_loader import carregar_config
 from core.scheduling.availability import calcular_horarios_disponiveis
 from core.storage.json_repository import JsonAgendaRepository
+from core.storage.repository_factory import criar_agenda_repository
 
 
 DEFAULT_SOLICITACOES_PATH = "data/solicitacoes.json"
@@ -73,6 +74,27 @@ def listar_solicitacoes_loja(
     return list(repository.listar())
 
 
+def listar_solicitacoes_humano(
+    agenda_repository: JsonAgendaRepository | None = None,
+) -> list[dict]:
+    repository = agenda_repository or criar_agenda_repository()
+    listar = getattr(repository, "listar_solicitacoes_humano", None)
+    if not callable(listar):
+        return []
+    return list(listar())
+
+
+def listar_solicitacoes_atendimento(
+    agenda_repository: JsonAgendaRepository | None = None,
+    solicitacoes_repository: JsonAgendaRepository | None = None,
+) -> list[dict]:
+    solicitacoes_loja = [
+        {"tipo": "loja", **solicitacao}
+        for solicitacao in listar_solicitacoes_loja(solicitacoes_repository)
+    ]
+    return listar_solicitacoes_humano(agenda_repository) + solicitacoes_loja
+
+
 def gerar_resumo_do_dia(
     data: str,
     agenda_repository: JsonAgendaRepository | None = None,
@@ -138,7 +160,7 @@ def listar_horarios_disponiveis(
 
 
 def _listar_agenda(agenda_repository: JsonAgendaRepository | None) -> list[dict]:
-    repository = agenda_repository or JsonAgendaRepository()
+    repository = agenda_repository or criar_agenda_repository()
     return repository.listar()
 
 

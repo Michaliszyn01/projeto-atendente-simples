@@ -1,9 +1,10 @@
+from typing import Any
+
 from core.scheduling.validators import normalizar_telefone
-from core.storage.json_repository import JsonAgendaRepository
 
 
 def buscar_agendamentos_ativos_por_telefone(
-    repository: JsonAgendaRepository,
+    repository: Any,
     telefone: str,
 ) -> list[dict]:
     return repository.buscar_agendamentos_por_telefone(
@@ -13,7 +14,7 @@ def buscar_agendamentos_ativos_por_telefone(
 
 
 def atualizar_status_agendamento(
-    repository: JsonAgendaRepository,
+    repository: Any,
     agendamento_id: str,
     status: str,
     extras: dict | None = None,
@@ -25,14 +26,14 @@ def atualizar_status_agendamento(
 
 
 def cancelar_agendamento(
-    repository: JsonAgendaRepository,
+    repository: Any,
     agendamento_id: str,
 ) -> dict | None:
     return repository.cancelar_agendamento(agendamento_id)
 
 
 def remarcar_agendamento(
-    repository: JsonAgendaRepository,
+    repository: Any,
     agendamento_id: str,
     nova_data: str,
     novo_horario: str,

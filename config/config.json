@@ -6,6 +6,10 @@
   "instagram": "@estabelecimento",
   "cidade": "Bauru",
   "estado": "SP",
+  "storage": {
+    "type": "sqlite",
+    "path": "data/agenda.db"
+  },
   "usa_agendamento": true,
   "usa_profissional": true,
   "nome_profissional": "profissional",
