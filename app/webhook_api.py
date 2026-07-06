@@ -1,5 +1,10 @@
+from dotenv import load_dotenv
+
+load_dotenv()
 import os
 import logging
+import hashlib
+import json
 from typing import Any
 
 from fastapi import FastAPI, Header, Request
@@ -47,7 +52,26 @@ def receber_whatsapp(
         return _erro("Telefone de WhatsApp inválido.", status_code=400)
 
     engine = _get_engine()
-    reply = engine.process_message(telefone, str(mensagem))
+    repository = _get_sqlite_repository(engine)
+    message_id_externo = _message_id_generico(payload, telefone, str(mensagem))
+    if repository is not None and message_id_externo and not repository.registrar_mensagem_unica(
+        telefone=telefone,
+        direcao="entrada",
+        mensagem=str(mensagem),
+        canal="generic",
+        message_id_externo=message_id_externo,
+        payload=payload,
+    ):
+        return JSONResponse(
+            {
+                "ok": True,
+                "to": telefone,
+                "duplicate": True,
+                "processed": 0,
+            }
+        )
+
+    reply = _processar_mensagem_webhook(engine, telefone, str(mensagem))
     state = engine.session_store.get_or_create(telefone)
 
     return JSONResponse(
@@ -100,7 +124,7 @@ def receber_meta(payload: dict[str, Any]) -> JSONResponse:
             continue
 
         texto = str(mensagem["texto"])
-        reply = engine.process_message(telefone, texto)
+        reply = _processar_mensagem_webhook(engine, telefone, texto)
         processed += 1
 
         if repository is not None:
@@ -164,6 +188,12 @@ def _get_sqlite_repository(engine: ConversationEngine) -> SQLiteAgendaRepository
     return None
 
 
+def _processar_mensagem_webhook(engine: ConversationEngine, telefone: str, texto: str) -> str:
+    if not engine.session_store.exists(telefone):
+        return engine.start(telefone)
+    return engine.process_message(telefone, texto)
+
+
 def _extrair_mensagens_meta(payload: dict[str, Any]) -> list[dict[str, str | None]]:
     mensagens_extraidas: list[dict[str, str | None]] = []
     for entry in _lista(payload.get("entry")):
@@ -197,6 +227,36 @@ def _texto_ou_none(valor: Any) -> str | None:
         return None
     texto = str(valor).strip()
     return texto or None
+
+
+def _message_id_generico(payload: dict[str, Any], telefone: str, mensagem: str) -> str:
+    for chave in ("message_id_externo", "message_id", "id", "external_id", "event_id"):
+        valor = _texto_ou_none(payload.get(chave))
+        if valor:
+            return f"generic:{valor}"
+
+    timestamp = _timestamp_generico(payload)
+    payload_fingerprint = "" if timestamp else _fingerprint_payload(payload)
+    texto_normalizado = " ".join(mensagem.strip().split()).casefold()
+    base = f"{telefone}|generic|{texto_normalizado}|{timestamp or ''}|{payload_fingerprint}"
+    digest = hashlib.sha256(base.encode("utf-8")).hexdigest()
+    return f"generic:auto:{digest}"
+
+
+def _timestamp_generico(payload: dict[str, Any]) -> str | None:
+    for chave in ("timestamp", "ts", "time", "created_at"):
+        valor = _texto_ou_none(payload.get(chave))
+        if valor:
+            return valor
+    return None
+
+
+def _fingerprint_payload(payload: dict[str, Any]) -> str:
+    try:
+        serializado = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except TypeError:
+        serializado = str(sorted(payload.items()))
+    return hashlib.sha256(serializado.encode("utf-8")).hexdigest()
 
 
 def _validar_api_key(api_key_recebida: str | None) -> JSONResponse | None:

@@ -13,18 +13,6 @@ def buscar_agendamentos_ativos_por_telefone(
     )
 
 
-def atualizar_status_agendamento(
-    repository: Any,
-    agendamento_id: str,
-    status: str,
-    extras: dict | None = None,
-) -> dict | None:
-    dados = {"status": status}
-    if extras:
-        dados.update(extras)
-    return repository.atualizar_agendamento(agendamento_id, dados)
-
-
 def cancelar_agendamento(
     repository: Any,
     agendamento_id: str,

@@ -16,16 +16,6 @@ def normalizar_texto(texto: str) -> str:
     return " ".join(texto.split())
 
 
-def normalizar_data(texto: str, hoje: date | None = None) -> str | None:
-    data = _extrair_data(texto, hoje=hoje)
-    hoje = hoje or date.today()
-
-    if data is None or data < hoje:
-        return None
-
-    return data.isoformat()
-
-
 def validar_data_agendamento(texto: str, hoje: date | None = None) -> tuple[str | None, str | None]:
     hoje = hoje or date.today()
     data = _extrair_data(texto, hoje=hoje)
@@ -146,10 +136,6 @@ def normalizar_resposta_sim_nao(texto: str) -> str | None:
     return None
 
 
-def validar_resposta_sim_nao(texto: str) -> str | None:
-    return normalizar_resposta_sim_nao(texto)
-
-
 def normalizar_telefone(texto: str) -> str:
     return re.sub(r"\D", "", texto)
 
@@ -189,7 +175,3 @@ def minutos_para_horario(total_minutos: int) -> str:
     minuto = total_minutos % 60
     return f"{hora:02d}:{minuto:02d}"
 
-
-def horario_esta_na_configuracao(horario: str, config: dict[str, Any] | None = None) -> bool:
-    config = config or carregar_config()
-    return any(horario in horarios for horarios in config.get("horarios", {}).values())

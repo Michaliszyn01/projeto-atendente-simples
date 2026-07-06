@@ -6,7 +6,7 @@ from core.config.config_loader import carregar_config
 from core.conversation.flow import AtendimentoFlow
 from core.conversation.session_store import InMemorySessionStore
 from core.conversation.state import ConversationState
-from core.scheduling.validators import normalizar_telefone_whatsapp
+from core.scheduling.validators import normalizar_telefone_whatsapp, normalizar_texto
 from core.storage.repository_factory import criar_agenda_repository
 from core.storage.sqlite_repository import SQLiteAgendaRepository, SQLiteSessionStore
 
@@ -45,17 +45,21 @@ class ConversationEngine:
             self._preencher_telefone_detectado(session_id, state)
             self.session_store.save(session_id, state)
 
+        if self.session_store.is_finished(session_id):
+            comando = normalizar_texto(message)
+            if self._eh_comando_novo_atendimento(comando):
+                return self.reset(session_id)
+            return self._mensagem_atendimento_ja_encerrado()
+
         flow = self._flow_for_session(session_id)
         enviar_boas_vindas = self._deve_enviar_boas_vindas(session_id, flow.state)
         resposta = flow.receber(message)
         if enviar_boas_vindas:
             flow.state.boas_vindas_enviada = True
             resposta = self._combinar_boas_vindas(resposta)
+        self._preencher_telefone_detectado(session_id, flow.state)
         self.session_store.save(session_id, flow.state, finished=flow.encerrado)
         return resposta
-
-    def processar_mensagem(self, session_id: str, mensagem: str) -> str:
-        return self.process_message(session_id, mensagem)
 
     def is_finished(self, session_id: str) -> bool:
         return self.session_store.is_finished(session_id)
@@ -63,9 +67,6 @@ class ConversationEngine:
     def reset(self, session_id: str) -> str:
         self.session_store.reset(session_id)
         return self.start(session_id)
-
-    def delete_session(self, session_id: str) -> None:
-        self.session_store.delete(session_id)
 
     def _new_flow(self) -> AtendimentoFlow:
         return AtendimentoFlow(
@@ -104,6 +105,15 @@ class ConversationEngine:
             return normalizar_telefone_whatsapp(session_id)
         except ValueError:
             return None
+
+    def _eh_comando_novo_atendimento(self, comando: str) -> bool:
+        return comando in {"1", "novo", "novo atendimento", "recomecar", "recomeçar", "menu", "iniciar"}
+
+    def _mensagem_atendimento_ja_encerrado(self) -> str:
+        return (
+            "Seu atendimento anterior já foi encerrado.\n"
+            "Para começar um novo atendimento, digite 1 ou novo atendimento."
+        )
 
 
 def deve_enviar_boas_vindas(state: ConversationState) -> bool:

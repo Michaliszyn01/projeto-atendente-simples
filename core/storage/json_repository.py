@@ -35,18 +35,12 @@ class JsonAgendaRepository:
             return []
         return dados
 
-    def listar_agendamentos(self) -> list[dict]:
-        return self.listar()
-
     def salvar(self, agenda: list[dict]) -> None:
         self._garantir_arquivo()
         self.caminho.write_text(
             json.dumps(agenda, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-
-    def salvar_agendamentos(self, agenda: list[dict]) -> None:
-        self.salvar(agenda)
 
     def adicionar(self, agendamento: dict) -> None:
         agenda = self.listar()
@@ -67,7 +61,7 @@ class JsonAgendaRepository:
         for agendamento in self.listar():
             if normalizar_telefone(str(agendamento.get("telefone", ""))) != telefone_normalizado:
                 continue
-            if apenas_ativos and agendamento.get("status") != "agendado":
+            if apenas_ativos and agendamento.get("status") == "cancelado":
                 continue
             encontrados.append(agendamento)
 
@@ -96,6 +90,8 @@ class JsonAgendaRepository:
         agendamento = self.buscar_agendamento_por_id(agendamento_id)
         if agendamento is None:
             return None
+        if agendamento.get("status") == "cancelado":
+            return agendamento
 
         return self.atualizar_agendamento(
             agendamento_id,
@@ -120,6 +116,13 @@ class JsonAgendaRepository:
         agendamento = self.buscar_agendamento_por_id(agendamento_id)
         if agendamento is None:
             return None
+        if (
+            agendamento.get("status") != "cancelado"
+            and agendamento.get("data") == nova_data
+            and agendamento.get("horario") == novo_horario
+            and agendamento.get("profissional") == profissional
+        ):
+            return agendamento
 
         evento = {
             "acao": "remarcado",

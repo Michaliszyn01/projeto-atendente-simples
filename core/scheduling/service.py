@@ -20,8 +20,10 @@ def criar_agendamento(
     duracao = int(config["servicos"][state.servico])
     agenda = repository.listar()
 
+    mensagem_conflito = "Esse horário acabou de ser ocupado. Escolha outro horário disponível."
+
     if tem_conflito(state.data, state.horario, state.profissional, duracao, agenda):
-        raise ValueError("Esse horário acabou de ficar indisponível.")
+        raise ValueError(mensagem_conflito)
 
     criado_em = datetime.now().isoformat(timespec="seconds")
     telefone_normalizado = _normalizar_telefone_para_cliente(state.telefone)
@@ -42,7 +44,10 @@ def criar_agendamento(
         "atualizado_em": criado_em,
         "origem": "whatsapp",
     }
-    repository.adicionar_agendamento(agendamento)
+    try:
+        repository.adicionar_agendamento(agendamento)
+    except ValueError as exc:
+        raise ValueError(mensagem_conflito) from exc
     return agendamento
 
 

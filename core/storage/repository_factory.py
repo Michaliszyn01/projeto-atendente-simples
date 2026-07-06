@@ -5,9 +5,6 @@ from core.storage.json_repository import JsonAgendaRepository
 from core.storage.sqlite_repository import DEFAULT_DB_PATH, SQLiteAgendaRepository
 
 
-SQLITE_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
-
-
 def criar_agenda_repository(
     config: dict[str, Any] | None = None,
     caminho: str | Path | None = None,

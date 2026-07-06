@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 from dataclasses import asdict, fields
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +13,8 @@ from core.scheduling.validators import normalizar_telefone_whatsapp
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "agenda.db"
+_LOCKS_POR_DB: dict[Path, threading.RLock] = {}
+_LOCKS_GUARD = threading.Lock()
 
 AGENDAMENTO_COLUNAS = {
     "id",
@@ -41,6 +44,8 @@ class SQLiteAgendaRepository:
         self.caminho = Path(caminho) if caminho is not None else DEFAULT_DB_PATH
         if not self.caminho.is_absolute():
             self.caminho = PROJECT_ROOT / self.caminho
+        self.caminho = self.caminho.resolve()
+        self._lock = _lock_para_db(self.caminho)
         self.caminho.parent.mkdir(parents=True, exist_ok=True)
         self._inicializar_schema()
 
@@ -51,26 +56,22 @@ class SQLiteAgendaRepository:
             ).fetchall()
         return [self._linha_para_agendamento(linha) for linha in linhas]
 
-    def listar_agendamentos(self) -> list[dict]:
-        return self.listar()
-
     def salvar(self, agenda: list[dict]) -> None:
-        with self._conectar() as conn:
-            with conn:
-                conn.execute("DELETE FROM agendamentos")
-                for agendamento in agenda:
-                    self._inserir_ou_substituir(conn, agendamento)
-
-    def salvar_agendamentos(self, agenda: list[dict]) -> None:
-        self.salvar(agenda)
+        with self._lock:
+            with self._conectar() as conn:
+                with conn:
+                    conn.execute("DELETE FROM agendamentos")
+                    for agendamento in agenda:
+                        self._inserir_ou_substituir(conn, agendamento)
 
     def adicionar(self, agendamento: dict) -> None:
         self.adicionar_agendamento(agendamento)
 
     def adicionar_agendamento(self, agendamento: dict) -> None:
-        with self._conectar() as conn:
-            with conn:
-                self._inserir_ou_substituir(conn, agendamento)
+        with self._lock:
+            with self._conectar() as conn:
+                with conn:
+                    self._inserir_ou_substituir(conn, agendamento)
 
     def buscar_agendamentos_por_telefone(
         self,
@@ -81,8 +82,8 @@ class SQLiteAgendaRepository:
         sql = "SELECT * FROM agendamentos WHERE telefone_normalizado = ?"
         params: list[Any] = [telefone_normalizado]
         if apenas_ativos:
-            sql += " AND status = ?"
-            params.append("agendado")
+            sql += " AND status != ?"
+            params.append("cancelado")
         sql += " ORDER BY data, horario, profissional, nome"
 
         with self._conectar() as conn:
@@ -108,9 +109,10 @@ class SQLiteAgendaRepository:
             return None
 
         atualizado = {**agendamento, **dados_atualizados, "atualizado_em": self._agora()}
-        with self._conectar() as conn:
-            with conn:
-                self._inserir_ou_substituir(conn, atualizado)
+        with self._lock:
+            with self._conectar() as conn:
+                with conn:
+                    self._inserir_ou_substituir(conn, atualizado)
         return self.buscar_agendamento_por_id(agendamento_id)
 
     def cancelar_agendamento(self, agendamento_id: str) -> dict | None:
@@ -118,6 +120,8 @@ class SQLiteAgendaRepository:
         agendamento = self.buscar_agendamento_por_id(agendamento_id)
         if agendamento is None:
             return None
+        if agendamento.get("status") == "cancelado":
+            return agendamento
 
         return self.atualizar_agendamento(
             agendamento_id,
@@ -142,6 +146,13 @@ class SQLiteAgendaRepository:
         agendamento = self.buscar_agendamento_por_id(agendamento_id)
         if agendamento is None:
             return None
+        if (
+            agendamento.get("status") != "cancelado"
+            and agendamento.get("data") == nova_data
+            and agendamento.get("horario") == novo_horario
+            and agendamento.get("profissional") == profissional
+        ):
+            return agendamento
 
         evento = {
             "acao": "remarcado",
@@ -167,9 +178,10 @@ class SQLiteAgendaRepository:
         )
 
     def limpar(self) -> None:
-        with self._conectar() as conn:
-            with conn:
-                conn.execute("DELETE FROM agendamentos")
+        with self._lock:
+            with self._conectar() as conn:
+                with conn:
+                    conn.execute("DELETE FROM agendamentos")
 
     def upsert_cliente(
         self,
@@ -180,17 +192,18 @@ class SQLiteAgendaRepository:
     ) -> str:
         telefone_normalizado = _normalizar_telefone_ou_valor(telefone)
         agora = self._agora()
-        with self._conectar() as conn:
-            with conn:
-                self._upsert_cliente(
-                    conn,
-                    telefone=telefone,
-                    telefone_normalizado=telefone_normalizado,
-                    nome=nome,
-                    whatsapp_raw_id=whatsapp_raw_id,
-                    payload=payload,
-                    agora=agora,
-                )
+        with self._lock:
+            with self._conectar() as conn:
+                with conn:
+                    self._upsert_cliente(
+                        conn,
+                        telefone=telefone,
+                        telefone_normalizado=telefone_normalizado,
+                        nome=nome,
+                        whatsapp_raw_id=whatsapp_raw_id,
+                        payload=payload,
+                        agora=agora,
+                    )
         return telefone_normalizado
 
     def listar_solicitacoes_humano(self) -> list[dict]:
@@ -220,93 +233,109 @@ class SQLiteAgendaRepository:
         return solicitacoes
 
     def _conectar(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.caminho)
+        conn = sqlite3.connect(self.caminho, check_same_thread=False, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
     def _inicializar_schema(self) -> None:
-        with self._conectar() as conn:
-            with conn:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS clientes (
-                        id TEXT PRIMARY KEY,
-                        telefone TEXT NOT NULL UNIQUE,
-                        telefone_normalizado TEXT NOT NULL UNIQUE,
-                        whatsapp_raw_id TEXT,
-                        nome TEXT,
-                        criado_em TEXT NOT NULL,
-                        atualizado_em TEXT NOT NULL,
-                        ultimo_contato_em TEXT,
-                        payload_json TEXT
+        with self._lock:
+            with self._conectar() as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS clientes (
+                            id TEXT PRIMARY KEY,
+                            telefone TEXT NOT NULL UNIQUE,
+                            telefone_normalizado TEXT NOT NULL UNIQUE,
+                            whatsapp_raw_id TEXT,
+                            nome TEXT,
+                            criado_em TEXT NOT NULL,
+                            atualizado_em TEXT NOT NULL,
+                            ultimo_contato_em TEXT,
+                            payload_json TEXT
+                        )
+                        """
                     )
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS sessions (
-                        client_id TEXT PRIMARY KEY,
-                        telefone_normalizado TEXT NOT NULL,
-                        state_json TEXT NOT NULL,
-                        etapa_atual TEXT,
-                        atualizado_em TEXT NOT NULL,
-                        expires_at TEXT,
-                        FOREIGN KEY (client_id) REFERENCES clientes(id)
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS sessions (
+                            client_id TEXT PRIMARY KEY,
+                            telefone_normalizado TEXT NOT NULL,
+                            state_json TEXT NOT NULL,
+                            etapa_atual TEXT,
+                            atualizado_em TEXT NOT NULL,
+                            expires_at TEXT,
+                            FOREIGN KEY (client_id) REFERENCES clientes(id)
+                        )
+                        """
                     )
-                    """
-                )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS agendamentos (
-                        id TEXT PRIMARY KEY,
-                        cliente_id TEXT,
-                        telefone TEXT NOT NULL,
-                        telefone_normalizado TEXT NOT NULL,
-                        nome TEXT,
-                        servico TEXT NOT NULL,
-                        profissional TEXT,
-                        data TEXT NOT NULL,
-                        horario TEXT NOT NULL,
-                        duracao_minutos INTEGER,
-                        status TEXT NOT NULL,
-                        criado_em TEXT NOT NULL,
-                        atualizado_em TEXT NOT NULL,
-                        cancelado_em TEXT,
-                        remarcado_em TEXT,
-                        remarcado_de_id TEXT,
-                        observacoes TEXT,
-                        origem TEXT DEFAULT 'whatsapp',
-                        payload_json TEXT,
-                        FOREIGN KEY (cliente_id) REFERENCES clientes(id)
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS agendamentos (
+                            id TEXT PRIMARY KEY,
+                            cliente_id TEXT,
+                            telefone TEXT NOT NULL,
+                            telefone_normalizado TEXT NOT NULL,
+                            nome TEXT,
+                            servico TEXT NOT NULL,
+                            profissional TEXT,
+                            data TEXT NOT NULL,
+                            horario TEXT NOT NULL,
+                            duracao_minutos INTEGER,
+                            status TEXT NOT NULL,
+                            criado_em TEXT NOT NULL,
+                            atualizado_em TEXT NOT NULL,
+                            cancelado_em TEXT,
+                            remarcado_em TEXT,
+                            remarcado_de_id TEXT,
+                            observacoes TEXT,
+                            origem TEXT DEFAULT 'whatsapp',
+                            payload_json TEXT,
+                            FOREIGN KEY (cliente_id) REFERENCES clientes(id)
+                        )
+                        """
                     )
-                    """
-                )
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_agendamentos_telefone ON agendamentos(telefone_normalizado)"
-                )
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_agendamentos_data ON agendamentos(data, horario)"
-                )
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS mensagens (
-                        id TEXT PRIMARY KEY,
-                        client_id TEXT NOT NULL,
-                        telefone_normalizado TEXT NOT NULL,
-                        direcao TEXT NOT NULL,
-                        mensagem TEXT NOT NULL,
-                        criado_em TEXT NOT NULL,
-                        canal TEXT DEFAULT 'whatsapp',
-                        message_id_externo TEXT,
-                        payload_json TEXT,
-                        FOREIGN KEY (client_id) REFERENCES clientes(id)
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_agendamentos_telefone ON agendamentos(telefone_normalizado)"
                     )
-                    """
-                )
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_mensagens_message_id_externo ON mensagens(message_id_externo)"
-                )
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_agendamentos_data ON agendamentos(data, horario)"
+                    )
+                    conn.execute(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_agendamentos_horario_ativo
+                        ON agendamentos(data, horario, COALESCE(profissional, ''))
+                        WHERE status != 'cancelado'
+                        """
+                    )
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS mensagens (
+                            id TEXT PRIMARY KEY,
+                            client_id TEXT NOT NULL,
+                            telefone_normalizado TEXT NOT NULL,
+                            direcao TEXT NOT NULL,
+                            mensagem TEXT NOT NULL,
+                            criado_em TEXT NOT NULL,
+                            canal TEXT DEFAULT 'whatsapp',
+                            message_id_externo TEXT,
+                            payload_json TEXT,
+                            FOREIGN KEY (client_id) REFERENCES clientes(id)
+                        )
+                        """
+                    )
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_mensagens_message_id_externo ON mensagens(message_id_externo)"
+                    )
+                    conn.execute(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_mensagens_message_id_externo_unico
+                        ON mensagens(message_id_externo)
+                        WHERE message_id_externo IS NOT NULL
+                        """
+                    )
 
     def mensagem_externa_processada(self, message_id_externo: str) -> bool:
         if not message_id_externo:
@@ -329,36 +358,59 @@ class SQLiteAgendaRepository:
     ) -> None:
         telefone_normalizado = _normalizar_telefone_ou_valor(telefone)
         agora = self._agora()
-        with self._conectar() as conn:
-            with conn:
-                self._upsert_cliente(
-                    conn,
-                    telefone=telefone,
-                    telefone_normalizado=telefone_normalizado,
-                    nome=None,
-                    whatsapp_raw_id=telefone,
-                    payload=None,
-                    agora=agora,
-                )
-                conn.execute(
-                    """
-                    INSERT INTO mensagens (
-                        id, client_id, telefone_normalizado, direcao, mensagem,
-                        criado_em, canal, message_id_externo, payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(uuid4()),
-                        telefone_normalizado,
-                        telefone_normalizado,
-                        direcao,
-                        mensagem,
-                        agora,
-                        canal,
-                        message_id_externo,
-                        json.dumps(payload, ensure_ascii=False) if payload else None,
-                    ),
-                )
+        with self._lock:
+            with self._conectar() as conn:
+                with conn:
+                    self._upsert_cliente(
+                        conn,
+                        telefone=telefone,
+                        telefone_normalizado=telefone_normalizado,
+                        nome=None,
+                        whatsapp_raw_id=telefone,
+                        payload=None,
+                        agora=agora,
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO mensagens (
+                            id, client_id, telefone_normalizado, direcao, mensagem,
+                            criado_em, canal, message_id_externo, payload_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(uuid4()),
+                            telefone_normalizado,
+                            telefone_normalizado,
+                            direcao,
+                            mensagem,
+                            agora,
+                            canal,
+                            message_id_externo,
+                            json.dumps(payload, ensure_ascii=False) if payload else None,
+                        ),
+                    )
+
+    def registrar_mensagem_unica(
+        self,
+        telefone: str,
+        direcao: str,
+        mensagem: str,
+        canal: str,
+        message_id_externo: str,
+        payload: dict | None = None,
+    ) -> bool:
+        try:
+            self.registrar_mensagem(
+                telefone=telefone,
+                direcao=direcao,
+                mensagem=mensagem,
+                canal=canal,
+                message_id_externo=message_id_externo,
+                payload=payload,
+            )
+        except sqlite3.IntegrityError:
+            return False
+        return True
 
     def _inserir_ou_substituir(self, conn: sqlite3.Connection, agendamento: dict) -> None:
         dados = dict(agendamento)
@@ -387,30 +439,48 @@ class SQLiteAgendaRepository:
             agora=agora,
         )
 
-        payload = {
-            chave: valor
-            for chave, valor in dados.items()
-            if chave not in AGENDAMENTO_COLUNAS
-        }
+        payload = self._montar_payload_agendamento(dados)
         valores = {coluna: dados.get(coluna) for coluna in AGENDAMENTO_COLUNAS}
-        valores["payload_json"] = json.dumps(payload, ensure_ascii=False) if payload else dados.get("payload_json")
+        valores["payload_json"] = json.dumps(payload, ensure_ascii=False) if payload else None
 
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO agendamentos (
-                id, cliente_id, telefone, telefone_normalizado, nome, servico,
-                profissional, data, horario, duracao_minutos, status, criado_em,
-                atualizado_em, cancelado_em, remarcado_em, remarcado_de_id,
-                observacoes, origem, payload_json
-            ) VALUES (
-                :id, :cliente_id, :telefone, :telefone_normalizado, :nome, :servico,
-                :profissional, :data, :horario, :duracao_minutos, :status, :criado_em,
-                :atualizado_em, :cancelado_em, :remarcado_em, :remarcado_de_id,
-                :observacoes, :origem, :payload_json
+        try:
+            conn.execute(
+                """
+                INSERT INTO agendamentos (
+                    id, cliente_id, telefone, telefone_normalizado, nome, servico,
+                    profissional, data, horario, duracao_minutos, status, criado_em,
+                    atualizado_em, cancelado_em, remarcado_em, remarcado_de_id,
+                    observacoes, origem, payload_json
+                ) VALUES (
+                    :id, :cliente_id, :telefone, :telefone_normalizado, :nome, :servico,
+                    :profissional, :data, :horario, :duracao_minutos, :status, :criado_em,
+                    :atualizado_em, :cancelado_em, :remarcado_em, :remarcado_de_id,
+                    :observacoes, :origem, :payload_json
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    cliente_id = excluded.cliente_id,
+                    telefone = excluded.telefone,
+                    telefone_normalizado = excluded.telefone_normalizado,
+                    nome = excluded.nome,
+                    servico = excluded.servico,
+                    profissional = excluded.profissional,
+                    data = excluded.data,
+                    horario = excluded.horario,
+                    duracao_minutos = excluded.duracao_minutos,
+                    status = excluded.status,
+                    criado_em = excluded.criado_em,
+                    atualizado_em = excluded.atualizado_em,
+                    cancelado_em = excluded.cancelado_em,
+                    remarcado_em = excluded.remarcado_em,
+                    remarcado_de_id = excluded.remarcado_de_id,
+                    observacoes = excluded.observacoes,
+                    origem = excluded.origem,
+                    payload_json = excluded.payload_json
+                """,
+                valores,
             )
-            """,
-            valores,
-        )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Esse horário acabou de ser ocupado. Escolha outro horário disponível.") from exc
 
     def _upsert_cliente(
         self,
@@ -462,6 +532,13 @@ class SQLiteAgendaRepository:
             if isinstance(payload, dict):
                 dados.update(payload)
         return {chave: valor for chave, valor in dados.items() if valor is not None}
+
+    def _montar_payload_agendamento(self, dados: dict) -> dict:
+        payload = _json_dict(dados.get("payload_json"))
+        for chave, valor in dados.items():
+            if chave not in AGENDAMENTO_COLUNAS and valor is not None:
+                payload[chave] = valor
+        return payload
 
     def _linha_para_solicitacao_humano(self, linha: sqlite3.Row) -> dict | None:
         try:
@@ -531,29 +608,27 @@ class SQLiteSessionStore:
             {"state": asdict(state), "finished": finished},
             ensure_ascii=False,
         )
-        with self.repository._conectar() as conn:
-            with conn:
-                self.repository._upsert_cliente(
-                    conn,
-                    telefone=session_id,
-                    telefone_normalizado=telefone_normalizado,
-                    nome=state.nome,
-                    whatsapp_raw_id=session_id,
-                    payload=None,
-                    agora=agora,
-                )
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO sessions (
-                        client_id, telefone_normalizado, state_json, etapa_atual,
-                        atualizado_em, expires_at
-                    ) VALUES (?, ?, ?, ?, ?, NULL)
-                    """,
-                    (telefone_normalizado, telefone_normalizado, state_json, state.etapa, agora),
-                )
-
-    def set(self, session_id: str, state: ConversationState, finished: bool = False) -> None:
-        self.save(session_id, state, finished=finished)
+        with self.repository._lock:
+            with self.repository._conectar() as conn:
+                with conn:
+                    self.repository._upsert_cliente(
+                        conn,
+                        telefone=session_id,
+                        telefone_normalizado=telefone_normalizado,
+                        nome=state.nome,
+                        whatsapp_raw_id=session_id,
+                        payload=None,
+                        agora=agora,
+                    )
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO sessions (
+                            client_id, telefone_normalizado, state_json, etapa_atual,
+                            atualizado_em, expires_at
+                        ) VALUES (?, ?, ?, ?, ?, NULL)
+                        """,
+                        (telefone_normalizado, telefone_normalizado, state_json, state.etapa, agora),
+                    )
 
     def reset(self, session_id: str) -> ConversationState:
         state = ConversationState()
@@ -562,14 +637,16 @@ class SQLiteSessionStore:
 
     def delete(self, session_id: str) -> None:
         client_id = self._client_id(session_id)
-        with self.repository._conectar() as conn:
-            with conn:
-                conn.execute("DELETE FROM sessions WHERE client_id = ?", (client_id,))
+        with self.repository._lock:
+            with self.repository._conectar() as conn:
+                with conn:
+                    conn.execute("DELETE FROM sessions WHERE client_id = ?", (client_id,))
 
     def clear(self) -> None:
-        with self.repository._conectar() as conn:
-            with conn:
-                conn.execute("DELETE FROM sessions")
+        with self.repository._lock:
+            with self.repository._conectar() as conn:
+                with conn:
+                    conn.execute("DELETE FROM sessions")
 
     def is_finished(self, session_id: str) -> bool:
         client_id = self._client_id(session_id)
@@ -608,3 +685,22 @@ def _normalizar_telefone_ou_valor(valor: str) -> str:
         return normalizar_telefone_whatsapp(valor)
     except ValueError:
         return str(valor or "terminal_demo")
+
+
+def _lock_para_db(caminho: Path) -> threading.RLock:
+    with _LOCKS_GUARD:
+        if caminho not in _LOCKS_POR_DB:
+            _LOCKS_POR_DB[caminho] = threading.RLock()
+        return _LOCKS_POR_DB[caminho]
+
+
+def _json_dict(valor: Any) -> dict:
+    if isinstance(valor, dict):
+        return dict(valor)
+    if not valor:
+        return {}
+    try:
+        dados = json.loads(str(valor))
+    except json.JSONDecodeError:
+        return {}
+    return dict(dados) if isinstance(dados, dict) else {}

@@ -1,5 +1,4 @@
 from core.conversation.state import ConversationState
-from core.storage.sqlite_repository import SQLiteSessionStore
 
 
 class InMemorySessionStore:

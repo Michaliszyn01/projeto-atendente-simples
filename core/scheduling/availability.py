@@ -1,7 +1,7 @@
 from typing import Any
 
 from core.config.config_loader import carregar_config
-from core.scheduling.validators import horario_para_minutos, minutos_para_horario, normalizar_texto
+from core.scheduling.validators import horario_para_minutos, normalizar_texto
 
 
 def calcular_horarios_disponiveis(
@@ -79,7 +79,7 @@ def tem_conflito(
     for agendamento in agenda:
         if ignorar_agendamento_id is not None and agendamento.get("id") == ignorar_agendamento_id:
             continue
-        if agendamento.get("status") != "agendado":
+        if agendamento.get("status") == "cancelado":
             continue
         if agendamento.get("data") != data:
             continue
@@ -103,9 +103,3 @@ def intervalos_sobrepoem(
     fim_b: int,
 ) -> bool:
     return inicio_a < fim_b and inicio_b < fim_a
-
-
-def descrever_intervalo(horario: str, duracao_minutos: int) -> str:
-    inicio = horario_para_minutos(horario)
-    fim = inicio + duracao_minutos
-    return f"{horario} às {minutos_para_horario(fim)}"

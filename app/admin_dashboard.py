@@ -303,7 +303,7 @@ def _mostrar_ajuda_demo() -> None:
 
 
 def _filtrar_agendamentos(agenda: list[dict], data_iso: str, filtros: dict[str, Any]) -> list[dict]:
-    return _ordenar_agendamentos(
+    return reports.ordenar_agendamentos(
         item
         for item in agenda
         if item.get("data") == data_iso
@@ -314,7 +314,7 @@ def _filtrar_agendamentos(agenda: list[dict], data_iso: str, filtros: dict[str, 
 
 
 def _filtrar_cancelados(agenda: list[dict], data_iso: str, filtros: dict[str, Any]) -> list[dict]:
-    return _ordenar_agendamentos(
+    return reports.ordenar_agendamentos(
         item
         for item in agenda
         if item.get("data") == data_iso
@@ -325,7 +325,7 @@ def _filtrar_cancelados(agenda: list[dict], data_iso: str, filtros: dict[str, An
 
 
 def _filtrar_remarcados(agenda: list[dict], data_iso: str, filtros: dict[str, Any]) -> list[dict]:
-    return _ordenar_agendamentos(
+    return reports.ordenar_agendamentos(
         item
         for item in agenda
         if item.get("data") == data_iso
@@ -337,7 +337,7 @@ def _filtrar_remarcados(agenda: list[dict], data_iso: str, filtros: dict[str, An
 
 def _proximos_agendamentos(agenda: list[dict], filtros: dict[str, Any], limite: int = 5) -> list[dict]:
     hoje_iso = date.today().isoformat()
-    proximos = _ordenar_agendamentos(
+    proximos = reports.ordenar_agendamentos(
         item
         for item in agenda
         if item.get("status") == "agendado"
@@ -377,7 +377,7 @@ def _formatar_agendamentos_painel(agendamentos: list[dict]) -> list[dict]:
             "Data": _formatar_data(_valor_texto(item.get("data", ""))),
             "Horário": _valor_texto(item.get("horario", "")),
             "Cliente": _valor_texto(item.get("nome", "")),
-            "Serviço": _capitalizar(_valor_texto(item.get("servico", ""))),
+            "Serviço": formatters.capitalizar_texto(_valor_texto(item.get("servico", ""))),
             "Profissional": _valor_texto(item.get("profissional", "")),
             "Telefone": _formatar_telefone(_valor_texto(item.get("telefone", ""))),
             "Status": _status_visual(item),
@@ -476,17 +476,6 @@ def _formatar_contagem_tabela(contagem: dict | None) -> list[dict]:
     ]
 
 
-def _ordenar_agendamentos(agendamentos) -> list[dict]:
-    return sorted(
-        list(agendamentos),
-        key=lambda item: (
-            str(item.get("data", "")),
-            str(item.get("horario", "")),
-            str(item.get("profissional", "")),
-        ),
-    )
-
-
 def _opcoes_unicas(*listas) -> list[str]:
     opcoes = []
     for lista in listas:
@@ -513,15 +502,11 @@ def _status_visual(agendamento: dict) -> str:
         return "Remarcado"
     if status == "agendado":
         return "Agendado"
-    return _capitalizar(status) if status else ""
+    return formatters.capitalizar_texto(status) if status else ""
 
 
 def _formatar_data(data_iso: str) -> str:
     return formatters.formatar_data_br(str(data_iso))
-
-
-def _capitalizar(texto: str) -> str:
-    return " ".join(parte.capitalize() for parte in texto.split())
 
 
 def _cidade_estado(config: dict[str, Any]) -> str:
@@ -1103,10 +1088,6 @@ def _valor_texto(valor: Any) -> str:
     if valor_limpo == "":
         return ""
     return str(valor_limpo)
-
-
-def _remover_campos_vazios(linha: dict[str, Any]) -> dict[str, Any]:
-    return {campo: valor for campo, valor in linha.items() if _valor_tabela(valor) != ""}
 
 
 def _escapar(valor: Any) -> str:

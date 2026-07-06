@@ -14,6 +14,7 @@ class ConversationState:
     nome: Optional[str] = None
     telefone: Optional[str] = None
     boas_vindas_enviada: bool = False
+    erros_invalidos_consecutivos: int = 0
     humano_solicitado: bool = False
     etapa_antes_humano: Optional[str] = None
     categoria: Optional[str] = None

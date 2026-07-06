@@ -15,11 +15,11 @@ from core.scheduling.service import criar_agendamento
 from core.scheduling.validators import (
     formatar_data_br,
     normalizar_horario,
+    normalizar_resposta_sim_nao,
     normalizar_texto,
     validar_data_agendamento,
     validar_periodo,
     validar_profissional,
-    validar_resposta_sim_nao,
     validar_servico,
     validar_telefone,
 )
@@ -40,6 +40,7 @@ OPCOES_HUMANO = {
     "quero falar com alguem",
     "suporte",
 }
+COMANDOS_RECOMECAR = {"menu", "novo", "novo atendimento", "recomecar", "recomeçar", "reiniciar", "iniciar"}
 
 
 class AtendimentoFlow:
@@ -63,24 +64,33 @@ class AtendimentoFlow:
         return self.mensagem("menu_inicial") or self.mensagem("inicio")
 
     def receber(self, mensagem: str) -> str:
-        if self.encerrado:
-            return "Atendimento já encerrado."
-
-        etapa = self.state.etapa
         comando = normalizar_texto(mensagem)
 
+        if self.encerrado:
+            if comando == "1" or self._eh_comando_recomecar(comando):
+                return self.iniciar()
+            return (
+                "Seu atendimento anterior já foi encerrado.\n"
+                "Para começar um novo atendimento, digite 1 ou novo atendimento."
+            )
+
+        etapa = self.state.etapa
+
         if self._eh_opcao_humano(comando):
+            self._zerar_erros_invalidos()
             return self._acionar_humano(etapa)
 
         if comando == "sair":
+            self._zerar_erros_invalidos()
             self.encerrado = True
             self.state.etapa = "encerrado"
             return "Atendimento encerrado. Até mais!"
 
-        if comando == "menu":
+        if self._eh_comando_recomecar(comando):
             return self.iniciar()
 
         if comando == "voltar" and etapa not in {"escolha_inicial"}:
+            self._zerar_erros_invalidos()
             return self._voltar()
 
         if comando == "cancelar" and etapa not in {
@@ -88,13 +98,18 @@ class AtendimentoFlow:
             "cancelamento_escolha",
             "cancelamento_confirmacao",
         }:
+            self._zerar_erros_invalidos()
             self.encerrado = True
             self.state.etapa = "encerrado"
             return "Atendimento cancelado. Até mais!"
 
         handler = self._handlers_por_etapa().get(etapa)
         if handler is not None:
-            return handler(mensagem)
+            erros_antes = self.state.erros_invalidos_consecutivos
+            resposta = handler(mensagem)
+            if self.state.erros_invalidos_consecutivos == erros_antes:
+                self._zerar_erros_invalidos()
+            return resposta
 
         self.encerrado = True
         return "Não consegui continuar o atendimento. Vamos encerrar por aqui."
@@ -174,7 +189,10 @@ class AtendimentoFlow:
                 self.state.etapa = "loja_orcamento"
                 return self.mensagem("pergunta_orcamento")
 
-        return f"Resposta inválida. Responda com: {self._opcoes_inicio_texto()}."
+        return self._resposta_invalida(
+            f"Resposta inválida. Responda com: {self._opcoes_inicio_texto()}.",
+            permitir_cancelar=False,
+        )
 
     def _receber_consulta_telefone(self, mensagem: str) -> str:
         agendamentos, erro = self._buscar_agendamentos_ativos_por_telefone(
@@ -224,9 +242,11 @@ class AtendimentoFlow:
         return f"{resumo}\n\n{self.mensagem('confirmacao_cancelamento')}"
 
     def _receber_cancelamento_confirmacao(self, mensagem: str) -> str:
-        resposta = validar_resposta_sim_nao(mensagem)
+        resposta = normalizar_resposta_sim_nao(mensagem)
         if resposta is None:
-            return "Resposta inválida. Digite sim para confirmar ou não para manter o agendamento."
+            return self._resposta_invalida(
+                "Resposta inválida. Digite sim para confirmar ou não para manter o agendamento."
+            )
 
         if resposta == "nao":
             self.encerrado = True
@@ -286,7 +306,7 @@ class AtendimentoFlow:
         data, erro = validar_data_agendamento(mensagem, hoje=self.hoje)
 
         if erro is not None:
-            return erro
+            return self._resposta_invalida(erro)
 
         self.state.nova_data = data
         self.state.etapa = "remarcacao_periodo"
@@ -296,7 +316,7 @@ class AtendimentoFlow:
         periodo = validar_periodo(mensagem, self.config)
 
         if periodo is None:
-            return f"Período inválido. Responda com {self._periodos_texto()}."
+            return self._resposta_invalida(f"Período inválido. Responda com {self._periodos_texto()}.")
 
         self.state.novo_periodo = periodo
         return self._mostrar_horarios_remarcacao_ou_alternativas()
@@ -338,11 +358,11 @@ class AtendimentoFlow:
         horario = normalizar_horario(mensagem)
 
         if horario is None:
-            return "Horário inválido. Digite um horário como 10, 10:00, 15 ou 15:00."
+            return self._resposta_invalida("Horário inválido. Digite um horário como 10, 10:00, 15 ou 15:00.")
 
         profissional = self._escolher_profissional_para_horario(horario)
         if profissional is None:
-            return "Esse horário não está disponível na lista. Escolha um dos horários mostrados."
+            return self._resposta_invalida("Esse horário não está disponível na lista. Escolha um dos horários mostrados.")
 
         self.state.novo_horario = horario
         self.state.profissional = profissional
@@ -350,7 +370,7 @@ class AtendimentoFlow:
         return self._montar_confirmacao_remarcacao()
 
     def _receber_remarcacao_confirmacao(self, mensagem: str) -> str:
-        resposta = validar_resposta_sim_nao(mensagem)
+        resposta = normalizar_resposta_sim_nao(mensagem)
 
         if resposta == "nao":
             self.encerrado = True
@@ -358,7 +378,7 @@ class AtendimentoFlow:
             return self.mensagem("remarcacao_cancelada")
 
         if resposta != "sim":
-            return "Resposta inválida. Digite sim para confirmar ou não para cancelar."
+            return self._resposta_invalida("Resposta inválida. Digite sim para confirmar ou não para cancelar.")
 
         agendamento = self.state.agendamento_selecionado
         if agendamento is None or self.state.nova_data is None or self.state.novo_horario is None or self.state.profissional is None:
@@ -366,13 +386,18 @@ class AtendimentoFlow:
             self.state.etapa = "encerrado"
             return "Faltaram dados para remarcar. Vamos encerrar por aqui."
 
-        atualizado = remarcar_agendamento(
-            self.repository,
-            str(agendamento["id"]),
-            self.state.nova_data,
-            self.state.novo_horario,
-            self.state.profissional,
-        )
+        try:
+            atualizado = remarcar_agendamento(
+                self.repository,
+                str(agendamento["id"]),
+                self.state.nova_data,
+                self.state.novo_horario,
+                self.state.profissional,
+            )
+        except ValueError as exc:
+            self.state.etapa = "remarcacao_periodo"
+            self.state.novo_horario = None
+            return f"{exc} {self.mensagem('pergunta_periodo')}"
 
         self.encerrado = True
         self.state.etapa = "encerrado"
@@ -384,7 +409,7 @@ class AtendimentoFlow:
         data, erro = validar_data_agendamento(mensagem, hoje=self.hoje)
 
         if erro is not None:
-            return erro
+            return self._resposta_invalida(erro)
 
         self.state.data = data
         self.state.etapa = "servico"
@@ -394,7 +419,9 @@ class AtendimentoFlow:
         servico = validar_servico(mensagem, self.config)
 
         if servico is None:
-            return f"{self.rotulo_servico().capitalize()} inválido. Opções: {self._servicos_texto()}."
+            return self._resposta_invalida(
+                f"{self.rotulo_servico().capitalize()} inválido. Opções: {self._servicos_texto()}."
+            )
 
         self.state.servico = servico
         self.state.etapa = "profissional"
@@ -404,7 +431,9 @@ class AtendimentoFlow:
         valido, profissional = validar_profissional(mensagem, self.config)
 
         if not valido:
-            return f"{self.rotulo_profissional().capitalize()} inválido. Opções: {self._profissionais_texto()} ou não."
+            return self._resposta_invalida(
+                f"{self.rotulo_profissional().capitalize()} inválido. Opções: {self._profissionais_texto()} ou não."
+            )
 
         self.state.profissional_preferido = profissional
         self.state.etapa = "periodo"
@@ -414,7 +443,7 @@ class AtendimentoFlow:
         periodo = validar_periodo(mensagem, self.config)
 
         if periodo is None:
-            return f"Período inválido. Responda com {self._periodos_texto()}."
+            return self._resposta_invalida(f"Período inválido. Responda com {self._periodos_texto()}.")
 
         self.state.periodo = periodo
         return self._mostrar_horarios_ou_alternativas()
@@ -449,12 +478,12 @@ class AtendimentoFlow:
         horario = normalizar_horario(mensagem)
 
         if horario is None:
-            return "Horário inválido. Digite um horário como 10, 10:00, 15 ou 15:00."
+            return self._resposta_invalida("Horário inválido. Digite um horário como 10, 10:00, 15 ou 15:00.")
 
         profissional = self._escolher_profissional_para_horario(horario)
 
         if profissional is None:
-            return "Esse horário não está disponível na lista. Escolha um dos horários mostrados."
+            return self._resposta_invalida("Esse horário não está disponível na lista. Escolha um dos horários mostrados.")
 
         self.state.horario = horario
         self.state.profissional = profissional
@@ -465,7 +494,7 @@ class AtendimentoFlow:
         nome = mensagem.strip()
 
         if len(nome) < 2:
-            return f"Nome inválido. {self.mensagem('pergunta_nome')}"
+            return self._resposta_invalida(f"Nome inválido. {self.mensagem('pergunta_nome')}")
 
         self.state.nome = nome
         if self._telefone_preenchido() is not None:
@@ -479,14 +508,14 @@ class AtendimentoFlow:
         telefone = validar_telefone(mensagem)
 
         if telefone is None:
-            return f"Telefone inválido. {self.mensagem('pergunta_telefone')}"
+            return self._resposta_invalida(f"Telefone inválido. {self.mensagem('pergunta_telefone')}")
 
         self.state.telefone = telefone
         self.state.etapa = "confirmacao"
         return self._montar_confirmacao()
 
     def _receber_confirmacao(self, mensagem: str) -> str:
-        resposta = validar_resposta_sim_nao(mensagem)
+        resposta = normalizar_resposta_sim_nao(mensagem)
 
         if resposta == "nao":
             self.encerrado = True
@@ -494,7 +523,7 @@ class AtendimentoFlow:
             return "Agendamento cancelado. Até mais!"
 
         if resposta != "sim":
-            return "Resposta inválida. Digite sim para confirmar ou não para cancelar."
+            return self._resposta_invalida("Resposta inválida. Digite sim para confirmar ou não para cancelar.")
 
         try:
             agendamento = criar_agendamento(self.state, self.repository, self.config)
@@ -515,7 +544,7 @@ class AtendimentoFlow:
     def _receber_categoria_loja(self, mensagem: str) -> str:
         categoria = self._validar_categoria(mensagem)
         if categoria is None:
-            return f"Categoria inválida. Categorias disponíveis: {self._categorias_texto()}."
+            return self._resposta_invalida(f"Categoria inválida. Categorias disponíveis: {self._categorias_texto()}.")
 
         self.state.categoria = categoria
         self.encerrado = True
@@ -525,7 +554,7 @@ class AtendimentoFlow:
     def _receber_orcamento_loja(self, mensagem: str) -> str:
         descricao = mensagem.strip()
         if len(descricao) < 3:
-            return self.mensagem("pergunta_orcamento")
+            return self._resposta_invalida(self.mensagem("pergunta_orcamento"))
 
         self.state.descricao_orcamento = descricao
         self.state.etapa = "loja_nome"
@@ -534,7 +563,7 @@ class AtendimentoFlow:
     def _receber_nome_loja(self, mensagem: str) -> str:
         nome = mensagem.strip()
         if len(nome) < 2:
-            return f"Nome inválido. {self.mensagem('pergunta_nome')}"
+            return self._resposta_invalida(f"Nome inválido. {self.mensagem('pergunta_nome')}")
 
         self.state.nome = nome
         solicitacao = {
@@ -557,7 +586,7 @@ class AtendimentoFlow:
     ) -> tuple[list[dict], str | None]:
         telefone = validar_telefone(mensagem)
         if telefone is None:
-            return [], f"Telefone inválido. {self.mensagem(chave_pergunta_telefone)}"
+            return [], self._resposta_invalida(f"Telefone inválido. {self.mensagem(chave_pergunta_telefone)}")
 
         agendamentos = buscar_agendamentos_ativos_por_telefone(self.repository, telefone)
         if not agendamentos:
@@ -595,10 +624,10 @@ class AtendimentoFlow:
         try:
             indice = int(mensagem.strip())
         except ValueError:
-            return None, mensagem_invalida
+            return None, self._resposta_invalida(mensagem_invalida)
 
         if indice < 1 or indice > len(self.state.agendamentos_encontrados):
-            return None, "Opção inválida. Digite um número da lista ou digite voltar."
+            return None, self._resposta_invalida("Opção inválida. Digite um número da lista ou digite voltar.")
 
         return self.state.agendamentos_encontrados[indice - 1], None
 
@@ -622,9 +651,9 @@ class AtendimentoFlow:
             self.state.etapa = etapa_periodo
             return f"Certo, vamos tentar o dia {formatar_data_br(data)}. {self.mensagem('pergunta_periodo')}"
         if erro is not None and "anterior ao dia atual" in erro:
-            return erro
+            return self._resposta_invalida(erro)
 
-        return (
+        return self._resposta_invalida(
             f"Não entendi. Digite outro período ({self._periodos_texto()}) ou outro dia "
             "(hoje, amanhã ou DD/MM/AAAA)."
         )
@@ -726,6 +755,22 @@ class AtendimentoFlow:
         contexto = defaultdict(str, self.config)
         return valor.format_map(contexto)
 
+    def _resposta_invalida(self, mensagem: str, permitir_cancelar: bool = True) -> str:
+        self.state.erros_invalidos_consecutivos += 1
+        return f"{mensagem}{self._opcoes_recuperacao(permitir_cancelar=permitir_cancelar)}"
+
+    def _opcoes_recuperacao(self, permitir_cancelar: bool = True) -> str:
+        linhas = ["", "", "Você também pode digitar:", ""]
+        if permitir_cancelar:
+            linhas.append("* cancelar: encerrar este atendimento")
+        linhas.append("* recomeçar: voltar ao início")
+        if self.state.erros_invalidos_consecutivos >= 3:
+            linhas.append("* humano: falar com um atendente")
+        return "\n".join(linhas)
+
+    def _zerar_erros_invalidos(self) -> None:
+        self.state.erros_invalidos_consecutivos = 0
+
     def rotulo_profissional(self) -> str:
         return str(self.config.get("nome_profissional", "profissional"))
 
@@ -772,6 +817,9 @@ class AtendimentoFlow:
             "falar com" in normalizar_texto(item) and normalizar_texto(item) == resposta_normalizada
             for item in self.config.get("opcoes_inicio", [])
         )
+
+    def _eh_comando_recomecar(self, resposta_normalizada: str) -> bool:
+        return resposta_normalizada in COMANDOS_RECOMECAR
 
     def _eh_opcao_agendar(self, resposta_normalizada: str) -> bool:
         return resposta_normalizada in OPCOES_AGENDAR

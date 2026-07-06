@@ -16,7 +16,7 @@ def listar_agendamentos_por_data(
     agenda_repository: JsonAgendaRepository | None = None,
 ) -> list[dict]:
     agenda = _listar_agenda(agenda_repository)
-    return _ordenar_agendamentos(
+    return ordenar_agendamentos(
         agendamento
         for agendamento in agenda
         if agendamento.get("data") == data and agendamento.get("status") == "agendado"
@@ -45,7 +45,7 @@ def listar_agendamentos_por_profissional(
     data: str | None = None,
 ) -> list[dict]:
     agenda = _listar_agenda(agenda_repository)
-    return _ordenar_agendamentos(
+    return ordenar_agendamentos(
         agendamento
         for agendamento in agenda
         if agendamento.get("status") == "agendado"
@@ -59,7 +59,7 @@ def listar_agendamentos_cancelados(
     data: str | None = None,
 ) -> list[dict]:
     agenda = _listar_agenda(agenda_repository)
-    return _ordenar_agendamentos(
+    return ordenar_agendamentos(
         agendamento
         for agendamento in agenda
         if agendamento.get("status") == "cancelado"
@@ -164,7 +164,7 @@ def _listar_agenda(agenda_repository: JsonAgendaRepository | None) -> list[dict]
     return repository.listar()
 
 
-def _ordenar_agendamentos(agendamentos) -> list[dict]:
+def ordenar_agendamentos(agendamentos) -> list[dict]:
     return sorted(
         list(agendamentos),
         key=lambda agendamento: (
