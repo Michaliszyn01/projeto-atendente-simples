@@ -26,9 +26,16 @@ from core.scheduling.validators import (
 from core.storage.json_repository import JsonAgendaRepository
 
 
-OPCOES_AGENDAR = {"agendar", "marcar", "marcar horario"}
-OPCOES_CONSULTAR = {"consultar", "ver agendamento", "meu horario", "qual meu horario"}
-OPCOES_CANCELAR_AGENDAMENTO = {"cancelar", "desmarcar", "cancelar horario"}
+OPCOES_AGENDAR = {"agendar", "marcar", "marcar horario", "quero agendar", "quero marcar", "horario"}
+OPCOES_CONSULTAR = {
+    "consultar",
+    "ver agendamento",
+    "meu agendamento",
+    "meu horario",
+    "qual meu horario",
+    "tenho horario",
+}
+OPCOES_CANCELAR_AGENDAMENTO = {"cancelar", "desmarcar", "cancelar agendamento", "cancelar horario"}
 OPCOES_REMARCAR = {"remarcar", "trocar horario", "mudar horario", "mudar agendamento"}
 OPCOES_HUMANO = {
     "alguem",
@@ -40,7 +47,20 @@ OPCOES_HUMANO = {
     "quero falar com alguem",
     "suporte",
 }
-COMANDOS_RECOMECAR = {"menu", "novo", "novo atendimento", "recomecar", "recomeçar", "reiniciar", "iniciar"}
+SAUDACOES = {"oi", "ola", "opa", "bom dia", "boa tarde", "boa noite"}
+AGRADECIMENTOS = {"obrigado", "obrigada", "obg", "valeu", "vlw", "muito obrigado", "muito obrigada"}
+COMANDOS_MENU = {"menu", "inicio", "começar", "comecar"}
+COMANDOS_RECOMECAR = {
+    "menu",
+    "novo",
+    "novo atendimento",
+    "recomecar",
+    "recomeçar",
+    "reiniciar",
+    "resetar",
+    "iniciar",
+}
+ETAPAS_CONFIRMACAO = {"confirmacao", "cancelamento_confirmacao", "remarcacao_confirmacao"}
 
 
 class AtendimentoFlow:
@@ -89,7 +109,18 @@ class AtendimentoFlow:
         if self._eh_comando_recomecar(comando):
             return self.iniciar()
 
+        if self._eh_agradecimento(comando):
+            self._zerar_erros_invalidos()
+            return "Por nada! Se precisar de mais alguma coisa, é só me chamar."
+
+        if self._eh_saudacao(comando) or self._eh_comando_menu(comando):
+            return self.iniciar()
+
         if comando == "voltar" and etapa not in {"escolha_inicial"}:
+            self._zerar_erros_invalidos()
+            return self._voltar()
+
+        if comando == "anterior" and etapa not in {"escolha_inicial"}:
             self._zerar_erros_invalidos()
             return self._voltar()
 
@@ -102,6 +133,9 @@ class AtendimentoFlow:
             self.encerrado = True
             self.state.etapa = "encerrado"
             return "Atendimento cancelado. Até mais!"
+
+        if etapa not in ETAPAS_CONFIRMACAO and self._eh_comando_fluxo_global(comando):
+            return self._receber_escolha_inicial(mensagem)
 
         handler = self._handlers_por_etapa().get(etapa)
         if handler is not None:
@@ -190,7 +224,8 @@ class AtendimentoFlow:
                 return self.mensagem("pergunta_orcamento")
 
         return self._resposta_invalida(
-            f"Resposta inválida. Responda com: {self._opcoes_inicio_texto()}.",
+            "Não entendi essa opção. Você pode escolher uma das opções abaixo:\n"
+            f"{self._opcoes_inicio_lista()}",
             permitir_cancelar=False,
         )
 
@@ -792,6 +827,12 @@ class AtendimentoFlow:
     def _opcoes_inicio_texto(self) -> str:
         return " ou ".join(self.config.get("opcoes_inicio", []))
 
+    def _opcoes_inicio_lista(self) -> str:
+        opcoes = self.config.get("opcoes_inicio", [])
+        if not opcoes:
+            return "agendar, consultar, cancelar, remarcar ou alguém"
+        return "\n".join(f"{indice} - {opcao}" for indice, opcao in enumerate(opcoes, start=1))
+
     def _eh_opcao(self, resposta_normalizada: str, opcao: str) -> bool:
         return any(normalizar_texto(item) == resposta_normalizada for item in self.config.get("opcoes_inicio", [])) and (
             normalizar_texto(opcao) == resposta_normalizada
@@ -818,8 +859,25 @@ class AtendimentoFlow:
             for item in self.config.get("opcoes_inicio", [])
         )
 
+    def _eh_saudacao(self, resposta_normalizada: str) -> bool:
+        return resposta_normalizada in SAUDACOES
+
+    def _eh_agradecimento(self, resposta_normalizada: str) -> bool:
+        return resposta_normalizada in AGRADECIMENTOS
+
+    def _eh_comando_menu(self, resposta_normalizada: str) -> bool:
+        return resposta_normalizada in COMANDOS_MENU
+
     def _eh_comando_recomecar(self, resposta_normalizada: str) -> bool:
         return resposta_normalizada in COMANDOS_RECOMECAR
+
+    def _eh_comando_fluxo_global(self, resposta_normalizada: str) -> bool:
+        return (
+            self._eh_opcao_agendar(resposta_normalizada)
+            or self._eh_opcao_consultar(resposta_normalizada)
+            or self._eh_opcao_cancelar_agendamento(resposta_normalizada)
+            or self._eh_opcao_remarcar(resposta_normalizada)
+        )
 
     def _eh_opcao_agendar(self, resposta_normalizada: str) -> bool:
         return resposta_normalizada in OPCOES_AGENDAR

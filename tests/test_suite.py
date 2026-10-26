@@ -239,11 +239,103 @@ def test_respostas_invalidas_repetem_pergunta(tmp_path):
     flow = AtendimentoFlow(repository, hoje=date(2026, 6, 16))
 
     flow.iniciar()
-    assert "Resposta inválida" in flow.receber("talvez")
+    assert "Não entendi essa opção" in flow.receber("talvez")
     flow.receber("agendar")
     assert "Data inválida" in flow.receber("31/02/2026")
     flow.receber("hoje")
     assert "Serviço inválido" in flow.receber("massagem")
+
+
+def test_saudacoes_abrem_menu_sem_erro(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    flow = AtendimentoFlow(repository, hoje=date(2026, 6, 16))
+
+    resposta_oi = flow.receber("oi")
+    resposta_opa = flow.receber("opa")
+
+    assert "agendar" in resposta_oi
+    assert "inválid" not in resposta_oi.lower()
+    assert "agendar" in resposta_opa
+    assert "inválid" not in resposta_opa.lower()
+
+
+def test_agradecimento_recebe_resposta_educada_sem_erro(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    flow = AtendimentoFlow(repository, hoje=date(2026, 6, 16))
+
+    resposta = flow.receber("obrigado")
+
+    assert "Por nada" in resposta
+    assert "inválid" not in resposta.lower()
+
+
+def test_menu_mostra_menu_principal(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    flow = AtendimentoFlow(repository, hoje=date(2026, 6, 16))
+
+    flow.iniciar()
+    flow.receber("agendar")
+    resposta = flow.receber("menu")
+
+    assert "agendar" in resposta
+    assert flow.state.etapa == "escolha_inicial"
+
+
+def test_comandos_globais_iniciam_fluxos_principais(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    repository.salvar([agendamento_base()])
+
+    agendamento = AtendimentoFlow(repository, hoje=date(2026, 6, 16))
+    agendamento.iniciar()
+    assert "Qual dia" in agendamento.receber("quero agendar")
+
+    consulta = AtendimentoFlow(repository, hoje=date(2026, 6, 16))
+    consulta.iniciar()
+    assert "telefone" in consulta.receber("consultar")
+
+    remarcacao = AtendimentoFlow(repository, hoje=date(2026, 6, 16))
+    remarcacao.iniciar()
+    assert "telefone" in remarcacao.receber("remarcar")
+
+    cancelamento = AtendimentoFlow(repository, hoje=date(2026, 6, 16))
+    cancelamento.iniciar()
+    assert "telefone" in cancelamento.receber("cancelar")
+
+
+def test_humano_global_aciona_atendimento_humano(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    flow = AtendimentoFlow(repository, hoje=date(2026, 6, 16))
+
+    flow.iniciar()
+    resposta = flow.receber("falar com atendente")
+
+    assert "chamar" in resposta.lower() or "encaminhar" in resposta.lower()
+    assert flow.encerrado is True
+    assert flow.state.humano_solicitado is True
+
+
+def test_fallback_inicial_mostra_orientacao_util(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    flow = AtendimentoFlow(repository, hoje=date(2026, 6, 16))
+
+    flow.iniciar()
+    resposta = flow.receber("banana")
+
+    assert "Não entendi essa opção" in resposta
+    assert "agendar" in resposta
+    assert "recomeçar" in resposta
+
+
+def test_comando_global_de_consulta_funciona_no_meio_do_fluxo(tmp_path):
+    repository = JsonAgendaRepository(tmp_path / "agenda.json")
+    flow = AtendimentoFlow(repository, hoje=date(2026, 6, 16))
+
+    flow.iniciar()
+    flow.receber("agendar")
+    resposta = flow.receber("meu agendamento")
+
+    assert "telefone" in resposta
+    assert flow.state.etapa == "consulta_telefone"
 
 
 def test_data_invalida_mostra_opcoes_de_recuperacao(tmp_path):
